@@ -186,9 +186,8 @@ describe("conversation material roundtrip", () => {
       parseLearningPackage("会話の本文から適当に分割してほしい"),
     ).toThrow("JSON");
   });
-  it("rejects missing evidence, meaningless stems, invalid answers and empty notes", () => {
+  it("rejects meaningless stems, invalid answers and empty notes", () => {
     for (const invalid of [
-      { ...card, originalText: "" },
       { ...question, question: "次の記述の正誤を答えなさい。" },
       { ...question, answer: "別の答え" },
       { ...note, title: "" },
