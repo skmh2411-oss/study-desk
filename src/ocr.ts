@@ -1,4 +1,5 @@
 import type { Worker as OCRWorker } from "tesseract.js";
+import { decodeSelectedImage, validateSelectedImages } from "./imageSelection";
 
 export interface OCRResult {
   name: string;
@@ -8,70 +9,16 @@ export interface OCROptions {
   onProgress: (message: string) => void;
   signal?: AbortSignal;
 }
-const MAX_FILES = 5;
-const MAX_BYTES = 10 * 1024 * 1024;
 const MAX_IMAGE_EDGE = 3200;
 const MAX_IMAGE_PIXELS = 8_000_000;
 let running = false;
 function aborted() {
   return new DOMException("OCRをキャンセルしました。", "AbortError");
 }
-function checkFiles(files: File[]) {
-  if (!Array.isArray(files) || !files.length || files.length > MAX_FILES)
-    throw new Error("画像は1〜5枚で選択してください。");
-  for (const file of files) {
-    if (!(file instanceof File) || !file.size || file.size > MAX_BYTES)
-      throw new Error("画像は1枚あたり10MB以下にしてください。");
-    if (
-      file.type === "image/svg+xml" ||
-      /\.svgz?$/i.test(file.name) ||
-      (!file.type.startsWith("image/") &&
-        !/\.(png|jpe?g|webp|bmp|gif|tiff?|heic|heif|avif)$/i.test(file.name))
-    )
-      throw new Error("画像ファイルを選択してください。SVG・PDFは対象外です。");
-  }
-}
 /** Browser-decode to a bounded PNG: correct orientation, no source URL or persisted image. */
 async function imageBytes(file: File, ensureActive: () => void): Promise<Blob> {
-  let bitmap: ImageBitmap | undefined;
-  let source: CanvasImageSource;
-  let width: number, height: number;
-  if (typeof createImageBitmap === "function") {
-    try {
-      bitmap = await createImageBitmap(file, {
-        imageOrientation: "from-image",
-      });
-    } catch {
-      throw new Error(
-        `${file.name}を画像として開けません。JPEG/PNGの画像やスクリーンショットを使用してください。`,
-      );
-    }
-    source = bitmap;
-    width = bitmap.width;
-    height = bitmap.height;
-  } else {
-    const data = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result));
-      reader.onerror = () => reject(new Error("画像を読み込めません。"));
-      reader.readAsDataURL(file);
-    });
-    ensureActive();
-    const image = new Image();
-    await new Promise<void>((resolve, reject) => {
-      image.onload = () => resolve();
-      image.onerror = () =>
-        reject(
-          new Error(
-            `${file.name}を開けません。JPEG/PNGで再度選択してください。`,
-          ),
-        );
-      image.src = data;
-    });
-    source = image;
-    width = image.naturalWidth;
-    height = image.naturalHeight;
-  }
+  const decoded = await decodeSelectedImage(file, ensureActive);
+  const { source, width, height } = decoded;
   try {
     ensureActive();
     if (!width || !height) throw new Error("画像の大きさが不正です。");
@@ -100,7 +47,7 @@ async function imageBytes(file: File, ensureActive: () => void): Promise<Blob> {
     ensureActive();
     return blob;
   } finally {
-    bitmap?.close();
+    decoded.close();
   }
 }
 /**
@@ -113,7 +60,7 @@ export async function recognizeImages(
   files: File[],
   { onProgress, signal }: OCROptions,
 ): Promise<OCRResult[]> {
-  checkFiles(files);
+  validateSelectedImages(files);
   if (signal?.aborted) throw aborted();
   if (running)
     throw new Error(

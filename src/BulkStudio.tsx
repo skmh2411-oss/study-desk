@@ -14,6 +14,8 @@ import {
   type BulkSettings,
 } from "./bulk";
 import { recognizeImages } from "./ocr";
+import { mergeSelectedImages } from "./imageSelection";
+import type { ChangeEvent } from "react";
 const labels: Record<CardType, string> = {
   qa: "一問一答",
   formula: "計算式",
@@ -39,6 +41,8 @@ export function BulkStudio({
     sourceUrl: "",
     asOf: "",
   });
+  const photoInput = useRef<HTMLInputElement>(null),
+    fileImageInput = useRef<HTMLInputElement>(null);
   const [raw, setRaw] = useState(""),
     [images, setImages] = useState<File[]>([]);
   const [imageUrls, setImageUrls] = useState<string[]>([]);
@@ -71,6 +75,20 @@ export function BulkStudio({
     setPreview(null);
     setConfirmed(false);
     setMessage("");
+  };
+  const selectImages = (event: ChangeEvent<HTMLInputElement>) => {
+    const incoming = Array.from(event.currentTarget.files || []);
+    // Allow the same file to be selected again, including after removing it.
+    event.currentTarget.value = "";
+    if (!incoming.length) return;
+    try {
+      const next = mergeSelectedImages(images, incoming);
+      setImages(next);
+      setProgress("");
+      invalidate();
+    } catch (error) {
+      onError(error);
+    }
   };
   const changeSettings = (patch: Partial<BulkSettings>) => {
     setSettings({ ...settings, ...patch });
@@ -160,6 +178,109 @@ export function BulkStudio({
       </div>
       <fieldset disabled={busy} className="panel stack">
         <h2>素材と保存先</h2>
+        <section
+          className="stack image-selection"
+          aria-labelledby="image-selection-title"
+        >
+          <h3 id="image-selection-title">写真・スクショから読み取る</h3>
+          <p className="muted">
+            自分で選んだ画像だけを、この画面に一時的に読み込みます。写真フォルダ全体の読み取り・画像の外部送信・元画像の移動や削除は行いません。
+          </p>
+          <input
+            ref={photoInput}
+            type="file"
+            accept="image/*"
+            multiple
+            hidden
+            aria-label="写真・スクショの選択"
+            onChange={selectImages}
+          />
+          <input
+            ref={fileImageInput}
+            type="file"
+            multiple
+            hidden
+            aria-label="ファイル内の画像の選択"
+            onChange={selectImages}
+          />
+          <div className="image-selection-actions">
+            <button
+              type="button"
+              className="primary"
+              onClick={() => photoInput.current?.click()}
+            >
+              写真・スクショを追加
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => fileImageInput.current?.click()}
+            >
+              ファイルから画像を追加
+            </button>
+          </div>
+          <p className="muted">
+            写真から追加する場合は、表示されるメニューの「写真ライブラリ」を選択してください。ファイルが薄く表示される場合は「ファイルから画像を追加」をお試しください。画像以外は取り込みません。
+          </p>
+          <p role="status">選択済み {images.length} / 5枚（各10MBまで）</p>
+          <div className="bulk-images">
+            {images.map((f, i) => (
+              <details key={`${f.name}-${i}`}>
+                <summary>{f.name}</summary>
+                <button
+                  type="button"
+                  className="secondary"
+                  aria-label={`${f.name}を選択から外す`}
+                  onClick={() => {
+                    setImages(images.filter((_, index) => index !== i));
+                    setProgress("");
+                    invalidate();
+                  }}
+                >
+                  この画像を外す
+                </button>
+                {imageUrls[i] && (
+                  <img
+                    loading="lazy"
+                    src={imageUrls[i]}
+                    alt={`読取資料 ${i + 1}`}
+                  />
+                )}
+              </details>
+            ))}
+          </div>
+          <button
+            type="button"
+            disabled={!images.length}
+            onClick={() =>
+              void action(async () => {
+                controller.current = new AbortController();
+                const result = await recognizeImages(images, {
+                  signal: controller.current.signal,
+                  onProgress: (s) => {
+                    if (mounted.current) setProgress(s);
+                  },
+                });
+                if (!mounted.current || controller.current.signal.aborted)
+                  return;
+                setRaw((old) =>
+                  [old, result.map((x) => x.text).join("\n\n")]
+                    .filter(Boolean)
+                    .join("\n\n"),
+                );
+                invalidate();
+                setProgress(
+                  "読み取り完了。素材テキストに追加しました。誤読を確認してください。",
+                );
+              })
+            }
+          >
+            画像の文字を読み取る
+          </button>
+          <p className="muted">
+            印刷された日本語・英語が対象です。手書き、複雑な表・分数・添字は修正が必要です。HEICなどは端末の対応状況によって開けない場合があります。読み取った文字は、内容を確認して保存するまで学習データに登録されません。
+          </p>
+        </section>
         <div className="grid three">
           <label className="field">
             保存する種類
@@ -303,78 +424,8 @@ export function BulkStudio({
             />
           </label>
         </div>
-        <details>
-          <summary>画像を読み取る（最大5枚・各10MB）</summary>
-          <div className="stack">
-            <p className="muted">
-              印刷された日本語・英語が対象です。手書き、複雑な表・分数・添字は修正が必要です。初回は認識用データの読み込みに時間がかかります。画像は保存されません。
-            </p>
-            <input
-              aria-label="読み取る画像"
-              type="file"
-              accept="image/png,image/jpeg,image/webp,image/bmp"
-              multiple
-              onChange={(e) => {
-                const list = Array.from(e.target.files || []);
-                if (
-                  list.length > 5 ||
-                  list.some((f) => f.size > 10 * 1024 * 1024)
-                ) {
-                  onError(
-                    new Error("画像は5枚まで、各10MB以下で選んでください。"),
-                  );
-                  return;
-                }
-                setImages(list);
-                invalidate();
-              }}
-            />
-            <div className="bulk-images">
-              {images.map((f, i) => (
-                <details key={`${f.name}-${i}`}>
-                  <summary>{f.name}</summary>
-                  {imageUrls[i] && (
-                    <img
-                      loading="lazy"
-                      src={imageUrls[i]}
-                      alt={`読取資料 ${i + 1}`}
-                    />
-                  )}
-                </details>
-              ))}
-            </div>
-            <button
-              type="button"
-              disabled={!images.length}
-              onClick={() =>
-                void action(async () => {
-                  controller.current = new AbortController();
-                  const result = await recognizeImages(images, {
-                    signal: controller.current.signal,
-                    onProgress: (s) => {
-                      if (mounted.current) setProgress(s);
-                    },
-                  });
-                  if (!mounted.current || controller.current.signal.aborted)
-                    return;
-                  setRaw((old) =>
-                    [old, result.map((x) => x.text).join("\n\n")]
-                      .filter(Boolean)
-                      .join("\n\n"),
-                  );
-                  invalidate();
-                  setProgress(
-                    "読み取り完了。素材テキストに追加しました。誤読を確認してください。",
-                  );
-                })
-              }
-            >
-              画像の文字を読み取る
-            </button>
-          </div>
-        </details>
         <label className="field">
-          テキスト・CSV・JSONファイル
+          テキスト・CSV・JSONを取り込む（画像は上のボタンから）
           <input
             type="file"
             accept=".txt,.csv,.tsv,.json,text/plain,text/csv,application/json"
