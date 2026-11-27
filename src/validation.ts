@@ -1,4 +1,5 @@
 import { createEmptyCard, type Card } from "ts-fsrs";
+import { normalizeCitation, normalizeReferenceUrl } from "./references";
 import {
   defaultPreferences,
   localDate,
@@ -244,6 +245,46 @@ export function normalizeEntity(raw: unknown): Entity {
       0,
     );
     if (!Number.isInteger(r.wrongCount)) fail("wrongCount");
+  }
+  if (kind === "card" || kind === "question") {
+    if (kind === "question") {
+      if (raw.importance !== undefined) {
+        r.importance = number(raw.importance, "importance", 1, 5);
+        if (!Number.isInteger(r.importance)) fail("importance");
+      }
+      if (raw.tags !== undefined) r.tags = strings(raw.tags, "tags");
+    }
+    if (raw.cardType !== undefined) {
+      if (!["qa", "formula", "number"].includes(String(raw.cardType)))
+        fail("cardType");
+      r.cardType = raw.cardType;
+    }
+    for (const field of [
+      "answerUnit",
+      "conditions",
+      "originalText",
+      "sourceQuestionId",
+      "batchId",
+    ] as const)
+      if (raw[field] !== undefined) r[field] = text(raw[field], field);
+    if (raw.sourceUrl !== undefined) {
+      const url = text(raw.sourceUrl, "sourceUrl");
+      r.sourceUrl = url ? normalizeReferenceUrl(url) : "";
+    }
+    if (raw.sourceStatus !== undefined) {
+      if (
+        !["extracted", "unverified", "verified"].includes(
+          String(raw.sourceStatus),
+        )
+      )
+        fail("sourceStatus");
+      r.sourceStatus = raw.sourceStatus;
+    }
+    if (raw.citations !== undefined) {
+      if (!Array.isArray(raw.citations) || raw.citations.length > 100)
+        fail("citations");
+      r.citations = raw.citations.map(normalizeCitation);
+    }
   }
   if (kind === "attempt") {
     r.total = number(raw.total, "total", 1, 1000000);

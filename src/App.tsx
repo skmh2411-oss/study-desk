@@ -40,6 +40,9 @@ import {
 import { generatePlan, applyPlan, type PlanPreview } from "./planner";
 import { NotesView, CardsView, PracticeView } from "./Learning";
 import { SettingsView } from "./Settings";
+import { ChatGPTPanel } from "./ChatGPTPanel";
+import { BulkStudio } from "./BulkStudio";
+import { ReferenceManager } from "./ReferenceManager";
 import { installReconnectSync } from "./sync";
 import {
   defaultPreferences,
@@ -297,8 +300,29 @@ export default function App() {
             <PlanView entities={active} prefs={prefs} onError={onError} />
           ) : page === "ノート" ? (
             <NotesView entities={active} onError={onError} />
+          ) : page === "GPTに相談" ? (
+            <div className="stack">
+              <h1>GPTに相談</h1>
+              <ChatGPTPanel entities={entities} onError={onError} />
+              <button onClick={() => setPage("参照サイト")}>
+                参照サイトを管理
+              </button>
+            </div>
+          ) : page === "カード一括作成" || page === "問題取り込み" ? (
+            <BulkStudio
+              key={page}
+              entities={active}
+              onError={onError}
+              initialKind={page === "問題取り込み" ? "question" : "card"}
+            />
+          ) : page === "参照サイト" ? (
+            <ReferenceManager entities={active} onError={onError} />
           ) : (
-            <CardsView entities={active} onError={onError} />
+            <CardsView
+              entities={active}
+              onError={onError}
+              onBulk={() => setPage("カード一括作成")}
+            />
           )}
         </main>
         <footer className="footer">
@@ -394,6 +418,33 @@ function Dashboard({
           学習をはじめる
         </button>
       </div>
+      <section
+        className="panel consultation-entry stack"
+        aria-label="学習サポート"
+      >
+        <div>
+          <p className="eyebrow">STUDY SUPPORT</p>
+          <h2>相談と、まとめて学習準備</h2>
+        </div>
+        <button
+          className="primary consultation-main"
+          onClick={() => onPage("GPTに相談")}
+        >
+          GPTに相談
+        </button>
+        <div className="grid three">
+          <button onClick={() => onPage("カード一括作成")}>
+            画像・テキストからカード一括作成
+          </button>
+          <button onClick={() => onPage("問題取り込み")}>
+            科目別・重要問題を取り込む
+          </button>
+          <button onClick={() => onPage("参照サイト")}>参照サイトを登録</button>
+        </div>
+        <small className="muted">
+          画像の文字読み取りは端末内で処理。GPTへの共有は内容を選んで確認できます。
+        </small>
+      </section>
       <div className="tabs">
         <button
           className={tab === "概要" ? "active" : ""}

@@ -1,9 +1,20 @@
 import { db, getPreferences, type Conflict } from "./db";
-import { type Entity, type Preferences, type Session } from "./models";
+import {
+  type Entity,
+  type Preferences,
+  type Session,
+  type ReferenceSite,
+} from "./models";
 import { normalizeEntity, normalizePreferences } from "./validation";
+import { normalizeReferenceSite } from "./references";
 export { normalizeEntity, normalizePreferences } from "./validation";
 const isObject = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === "object" && !Array.isArray(v);
+function sourceQuestionKey(row: Entity) {
+  return row.kind === "question" && row.sourceUrl && row.sourceQuestionId
+    ? JSON.stringify([row.sourceUrl, row.sourceQuestionId])
+    : "";
+}
 function fail(field: string): never {
   throw new Error(`取り込み形式が不正です：${field}`);
 }
@@ -20,8 +31,11 @@ export interface ImportPreview {
   warnings: string[];
   conflictArchives?: { key: string; value: unknown }[];
   unresolvedConflicts?: Conflict[];
+  referenceSites?: ReferenceSite[];
+  referenceSiteDuplicates?: number;
+  referenceSiteConflicts?: number;
 }
-function contentKey(r: Entity, includeScheduling = false) {
+export function entityContentKey(r: Entity, includeScheduling = false) {
   const { id, createdAt, updatedAt, version, deletedAt, ...domain } =
     normalizeEntity(r);
   const stable = (v: unknown): string =>
@@ -37,11 +51,53 @@ function contentKey(r: Entity, includeScheduling = false) {
               .join(",") +
             "}"
           : JSON.stringify(v);
-  if (r.kind === "card" && !includeScheduling) {
-    const { fsrs, history, ...base } = domain;
+  if (!includeScheduling && (r.kind === "card" || r.kind === "question")) {
+    // Provenance/review state must not make the same study content new again.
+    const {
+      batchId,
+      sourceStatus,
+      citations,
+      sourceUrl,
+      sourceQuestionId,
+      originalText,
+      fsrs,
+      history,
+      wrongCount,
+      cause,
+      ...base
+    } = domain;
+    if (base.cardType === "qa") delete base.cardType;
+    if (base.answerUnit === "") delete base.answerUnit;
+    if (base.conditions === "") delete base.conditions;
+    if (r.kind === "question") {
+      if (base.importance === 3) delete base.importance;
+      if (Array.isArray(base.tags) && !base.tags.length) delete base.tags;
+    }
     return stable(base);
   }
   return stable(domain);
+}
+/** External imports cannot assert that a human has verified a source. */
+export function normalizeImportedEntity(raw: unknown): Entity {
+  const record = normalizeEntity(raw);
+  if (record.sourceStatus === "verified") record.sourceStatus = "unverified";
+  if (Array.isArray(record.citations))
+    record.citations = record.citations.map((c) => ({ ...c, checkedOn: "" }));
+  return record;
+}
+function referenceSiteKey(site: ReferenceSite) {
+  return `${site.targetId}\n${site.url}`;
+}
+function validateReferenceSiteTargets(
+  sites: ReferenceSite[],
+  records: Entity[],
+) {
+  const targets = new Set(
+    records.filter((r) => r.kind === "target").map((r) => r.id),
+  );
+  for (const site of sites)
+    if (site.targetId && !targets.has(site.targetId))
+      fail("referenceSites.targetId：学習対象がありません");
 }
 export function validateReferences(rows: Entity[], existing: Entity[]) {
   const map = new Map([...existing, ...rows].map((r) => [r.id, r]));
@@ -72,14 +128,15 @@ export function validateReferences(rows: Entity[], existing: Entity[]) {
 export async function createBackup(): Promise<string> {
   return db.transaction(
     "r",
-    [db.records, db.settings, db.syncMeta, db.conflicts],
+    [db.records, db.settings, db.syncMeta, db.conflicts, db.referenceSites],
     async () => {
-      const [records, preferences, meta, unresolvedConflicts] =
+      const [records, preferences, meta, unresolvedConflicts, referenceSites] =
         await Promise.all([
           db.records.toArray(),
           getPreferences(),
           db.syncMeta.toArray(),
           db.conflicts.toArray(),
+          db.referenceSites.toArray(),
         ]);
       return JSON.stringify(
         {
@@ -89,6 +146,7 @@ export async function createBackup(): Promise<string> {
           records,
           preferences,
           unresolvedConflicts,
+          referenceSites,
           conflictArchives: meta.filter((m) =>
             m.key.startsWith("conflict-archive:"),
           ),
@@ -116,10 +174,10 @@ export async function previewImport(input: string): Promise<ImportPreview> {
     raw.records.length > 100000
   )
     fail("format/schemaVersion/records");
-  const normalized = raw.records.map(normalizeEntity),
+  const normalized = raw.records.map(normalizeImportedEntity),
     existing = await db.records.toArray(),
     ids = new Map(existing.map((r) => [r.id, r])),
-    keys = new Set(existing.map((r) => contentKey(r))),
+    keys = new Set(existing.map((r) => entityContentKey(r))),
     result: ImportPreview = {
       records: [],
       duplicates: 0,
@@ -128,9 +186,10 @@ export async function previewImport(input: string): Promise<ImportPreview> {
     };
   for (const row of normalized) {
     const old = ids.get(row.id),
-      key = contentKey(row);
+      key = entityContentKey(row);
     if (old) {
-      if (contentKey(old, true) === contentKey(row, true)) result.duplicates++;
+      if (entityContentKey(old, true) === entityContentKey(row, true))
+        result.duplicates++;
       else result.conflicts++;
       continue;
     }
@@ -143,6 +202,62 @@ export async function previewImport(input: string): Promise<ImportPreview> {
     keys.add(key);
   }
   validateReferences(result.records, existing);
+  const downgraded = raw.records.filter(
+    (row) => isObject(row) && row.sourceStatus === "verified",
+  ).length;
+  if (downgraded)
+    result.warnings.push(
+      `${downgraded}件の外部JSONの「確認済み」は「未確認」に変更します。実際の出典を照合してください。`,
+    );
+  if (raw.referenceSites !== undefined) {
+    if (!Array.isArray(raw.referenceSites) || raw.referenceSites.length > 10000)
+      fail("referenceSites");
+    const sites = raw.referenceSites.map(normalizeReferenceSite);
+    const previous = await db.referenceSites.toArray();
+    const siteIds = new Map(previous.map((site) => [site.id, site]));
+    const siteKeys = new Set(previous.map(referenceSiteKey));
+    result.referenceSites = [];
+    result.referenceSiteDuplicates = 0;
+    result.referenceSiteConflicts = 0;
+    for (const site of sites) {
+      const old = siteIds.get(site.id);
+      if (old) {
+        const {
+          createdAt: _a,
+          updatedAt: _b,
+          version: _c,
+          ...oldContent
+        } = old;
+        const {
+          createdAt: _d,
+          updatedAt: _e,
+          version: _f,
+          ...newContent
+        } = site;
+        if (JSON.stringify(oldContent) === JSON.stringify(newContent))
+          result.referenceSiteDuplicates++;
+        else result.referenceSiteConflicts++;
+        continue;
+      }
+      const key = referenceSiteKey(site);
+      if (siteKeys.has(key)) {
+        result.referenceSiteDuplicates++;
+        continue;
+      }
+      result.referenceSites.push(site);
+      siteIds.set(site.id, site);
+      siteKeys.add(key);
+    }
+    validateReferenceSiteTargets(result.referenceSites, [
+      ...existing,
+      ...result.records,
+    ]);
+    if (result.referenceSiteConflicts)
+      result.warnings.push(
+        `${result.referenceSiteConflicts}件の出典サイトは既存IDと内容が異なるため取り込みません。`,
+      );
+  }
+
   if (raw.preferences !== undefined) {
     const prefs = normalizePreferences(raw.preferences);
     if (!(await db.settings.get("preferences"))) result.preferences = prefs;
@@ -176,8 +291,8 @@ export async function previewImport(input: string): Promise<ImportPreview> {
       fail("unresolvedConflicts");
     result.unresolvedConflicts = raw.unresolvedConflicts.map((c: unknown) => {
       if (!isObject(c)) fail("unresolvedConflicts");
-      const local = normalizeEntity(c.local),
-        remote = normalizeEntity(c.remote),
+      const local = normalizeImportedEntity(c.local),
+        remote = normalizeImportedEntity(c.remote),
         id = text(c.id, "conflict.id");
       if (local.id !== id || remote.id !== id) fail("conflict.id");
       return { id, local, remote };
@@ -189,23 +304,45 @@ export async function previewImport(input: string): Promise<ImportPreview> {
     );
   return result;
 }
-export async function applyImport(
-  preview: ImportPreview,
-): Promise<{ added: number; skipped: number }> {
+export async function applyImport(preview: ImportPreview): Promise<{
+  added: number;
+  skipped: number;
+  referenceSitesAdded?: number;
+  referenceSitesSkipped?: number;
+}> {
   return db.transaction(
     "rw",
-    [db.records, db.outbox, db.settings, db.syncMeta, db.conflicts],
+    [
+      db.records,
+      db.outbox,
+      db.settings,
+      db.syncMeta,
+      db.conflicts,
+      db.referenceSites,
+    ],
     async () => {
-      const rows = preview.records.map(normalizeEntity),
+      const rows = preview.records.map(normalizeImportedEntity),
         existing = await db.records.toArray();
       validateReferences(rows, existing);
+      const referenceSites = (preview.referenceSites || []).map(
+        normalizeReferenceSite,
+      );
+      validateReferenceSiteTargets(referenceSites, [...existing, ...rows]);
       const ids = new Set(existing.map((r) => r.id)),
-        keys = new Set(existing.map((r) => contentKey(r)));
+        keys = new Set(existing.map((r) => entityContentKey(r)));
+      const questionKeys = new Set(
+        existing.map(sourceQuestionKey).filter(Boolean),
+      );
       let added = 0,
         skipped = preview.duplicates + preview.conflicts;
       for (const row of rows) {
-        const key = contentKey(row);
-        if (ids.has(row.id) || keys.has(key)) {
+        const key = entityContentKey(row);
+        const questionKey = sourceQuestionKey(row);
+        if (
+          ids.has(row.id) ||
+          keys.has(key) ||
+          (questionKey && questionKeys.has(questionKey))
+        ) {
           skipped++;
           continue;
         }
@@ -213,6 +350,7 @@ export async function applyImport(
         await db.outbox.put({ id: row.id, version: row.version });
         ids.add(row.id);
         keys.add(key);
+        if (questionKey) questionKeys.add(questionKey);
         added++;
       }
       if (preview.preferences && !(await db.settings.get("preferences")))
@@ -224,10 +362,34 @@ export async function applyImport(
         if (!(await db.conflicts.get(c.id)))
           await db.conflicts.add({
             id: c.id,
-            local: normalizeEntity(c.local),
-            remote: normalizeEntity(c.remote),
+            local: normalizeImportedEntity(c.local),
+            remote: normalizeImportedEntity(c.remote),
           });
-      return { added, skipped };
+      const previousSites = await db.referenceSites.toArray();
+      const siteIds = new Set(previousSites.map((site) => site.id));
+      const siteKeys = new Set(previousSites.map(referenceSiteKey));
+      let referenceSitesAdded = 0,
+        referenceSitesSkipped =
+          (preview.referenceSiteDuplicates || 0) +
+          (preview.referenceSiteConflicts || 0);
+      for (const site of referenceSites) {
+        const key = referenceSiteKey(site);
+        if (siteIds.has(site.id) || siteKeys.has(key)) {
+          referenceSitesSkipped++;
+          continue;
+        }
+        await db.referenceSites.add(site);
+        siteIds.add(site.id);
+        siteKeys.add(key);
+        referenceSitesAdded++;
+      }
+      return {
+        added,
+        skipped,
+        ...(preview.referenceSites
+          ? { referenceSitesAdded, referenceSitesSkipped }
+          : {}),
+      };
     },
   );
 }

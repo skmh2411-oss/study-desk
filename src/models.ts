@@ -83,7 +83,38 @@ export interface Note extends Entity {
   source: string;
   verifiedOn: string;
 }
-export interface Flashcard extends Entity {
+export type CardType = "qa" | "formula" | "number";
+export type SourceStatus = "extracted" | "unverified" | "verified";
+export interface Citation {
+  url: string;
+  locator: string;
+  asOf: string;
+  checkedOn: string;
+}
+export interface LearningSourceMetadata {
+  cardType?: CardType;
+  answerUnit?: string;
+  conditions?: string;
+  originalText?: string;
+  sourceUrl?: string;
+  sourceQuestionId?: string;
+  sourceStatus?: SourceStatus;
+  citations?: Citation[];
+  batchId?: string;
+}
+export interface ReferenceSite {
+  id: string;
+  name: string;
+  url: string;
+  targetId: string;
+  priority: number;
+  asOf: string;
+  createdAt: string;
+  updatedAt: string;
+  version: number;
+  deletedAt?: string;
+}
+export interface Flashcard extends Entity, LearningSourceMetadata {
   kind: "card";
   question: string;
   answer: string;
@@ -95,13 +126,15 @@ export interface Flashcard extends Entity {
   fsrs: FSRSCard;
   history: { at: string; rating: number }[];
 }
-export interface Question extends Entity {
+export interface Question extends Entity, LearningSourceMetadata {
   kind: "question";
   question: string;
   answer: string;
   explanation: string;
   source: string;
   choices: string[];
+  importance?: number;
+  tags?: string[];
   cause: string;
   wrongCount: number;
 }

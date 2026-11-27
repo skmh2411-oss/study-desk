@@ -69,7 +69,7 @@ const fields: Record<Kind, string[]> = {
     "source",
     "verifiedOn",
   ],
-  card: ["question", "answer", "explanation", "tags", "importance", "source"],
+  card: ["question", "answer", "explanation", "tags", "importance", "source", "cardType", "answerUnit", "conditions", "sourceUrl"],
   attempt: ["total", "correct", "date"],
   question: [
     "question",

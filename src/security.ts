@@ -51,8 +51,10 @@ export function buildCsp(origin = "", development = false): string {
     `style-src-elem 'self'${development ? " 'unsafe-inline'" : ""}`,
     "style-src-attr 'unsafe-inline'",
     "font-src 'self'",
-    "img-src 'self' data:",
+    "img-src 'self' data: blob:",
     `connect-src 'self'${approved ? " " + approved : ""}${development ? " ws: wss:" : ""}`,
+    // OCR uses a same-origin HTTP classic worker, never blob/data workers.
+    // Worker WASM runs in its own response context, so page script-src stays strict.
     "worker-src 'self'",
     "child-src 'self'",
     "manifest-src 'self'",

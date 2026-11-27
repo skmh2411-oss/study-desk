@@ -1,4 +1,7 @@
 import { useState } from "react";
+import { useLiveQuery } from "dexie-react-hooks";
+import { db } from "./db";
+import { referenceInstructions } from "./references";
 import type { Entity, Kind } from "./models";
 import {
   DEFAULT_SHARING_SELECTION,
@@ -25,6 +28,11 @@ export function ChatGPTPanel({
   entities: Entity[];
   onError: (e: unknown) => void;
 }) {
+  const referenceSites = useLiveQuery(
+    () => db.referenceSites.toArray(),
+    [],
+    [],
+  );
   const [selection, setSelection] = useState<SharingSelection>(() => ({
     ...DEFAULT_SHARING_SELECTION,
     kinds: [...sharingKinds],
@@ -41,7 +49,9 @@ export function ChatGPTPanel({
   const active = entities.filter((e) => !e.deletedAt),
     candidates = sharingCandidates(entities, selection),
     records = sharedRecords(entities, selection);
-  const signature = sharingSignature(entities, selection, request, detail),
+  const rules = referenceInstructions(referenceSites, selection.targetId);
+  const signature =
+      sharingSignature(entities, selection, request, detail) + rules,
     current = signature === generatedSignature;
   const itemLabel = (e: Entity) => {
     if (e.kind === "session") {
@@ -65,7 +75,11 @@ export function ChatGPTPanel({
     setMessage("");
   };
   const generate = () => {
-    setPrompt(buildStudyPrompt(request, detail, records));
+    setPrompt(
+      buildStudyPrompt(request, detail, records) +
+        "\n\n【参照サイトの条件】\n" +
+        rules,
+    );
     setGeneratedSignature(signature);
     setConfirmed(false);
     setMessage(
@@ -92,6 +106,13 @@ export function ChatGPTPanel({
       <p className="muted">
         相談する項目だけを選びます。最初は0件です。APIや自動送信は使わず、コピーしてChatGPTに貼り付けます。返答のJSONは「バックアップ」から検証して取り込みます。
       </p>
+      <details>
+        <summary>登録した参照サイトと利用条件</summary>
+        <pre className="bulk-original">{rules}</pre>
+        <p className="muted">
+          登録外を参照した場合はサイト名・URL・理由を明示するよう依頼します。GPTの実際の参照行動をアプリが監視・保証するものではありません。
+        </p>
+      </details>
       <label className="field">
         依頼
         <select
