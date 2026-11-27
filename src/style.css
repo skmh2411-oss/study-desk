@@ -1631,3 +1631,10 @@ legend {
 .source-details button { margin-top: .5rem; }
 .source-details fieldset { border: 0; padding: .75rem 0; min-width: 0; }
 .bulk-studio input[type=checkbox] { width: 20px; height: 20px; }
+
+/* Explicit selected-image intake; no directory access. */
+.image-selection { border: 1px solid var(--line); background: var(--tint); border-radius: 12px; padding: 16px; }
+.image-selection-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.image-selection-actions button { min-height: 48px; flex: 1 1 220px; }
+.image-selection input[hidden] { display: none; }
+.bulk-images summary { overflow-wrap: anywhere; }
