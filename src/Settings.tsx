@@ -252,6 +252,18 @@ export function SettingsView({ entities, onError, onClose }: Props) {
                 候補 {preview.records.length} 件 / 重複 {preview.duplicates} 件
                 / 競合 {preview.conflicts} 件
               </p>
+              {preview.referenceSites && (
+                <p>
+                  参照サイト：追加候補 {preview.referenceSites.length} 件・重複{" "}
+                  {preview.referenceSiteDuplicates || 0} 件・競合{" "}
+                  {preview.referenceSiteConflicts || 0} 件
+                </p>
+              )}
+              {preview.referenceSites?.map((site) => (
+                <p key={site.id}>
+                  {site.name} · {site.url}
+                </p>
+              ))}
               {preview.warnings.map((w, i) => (
                 <p className="muted" key={i}>
                   {w}
@@ -278,7 +290,7 @@ export function SettingsView({ entities, onError, onClose }: Props) {
                   void action(async () => {
                     const result = await applyImport(preview);
                     setMessage(
-                      `追加 ${result.added} 件 / スキップ ${result.skipped} 件`,
+                      `追加 ${result.added} 件 / スキップ ${result.skipped} 件${result.referenceSitesAdded !== undefined ? ` / 参照サイト追加 ${result.referenceSitesAdded} 件` : ""}`,
                     );
                     setPreview(null);
                     setRaw("");

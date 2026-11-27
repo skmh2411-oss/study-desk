@@ -1619,3 +1619,15 @@ legend {
   color: var(--muted);
   padding-bottom: 10px;
 }
+
+/* v1.3 local bulk study tools */
+.consultation-entry { margin-bottom: 1.25rem; }
+.consultation-main { font-size: 1.1rem; min-height: 56px; width: 100%; }
+.bulk-studio fieldset { min-width: 0; }
+.bulk-candidate { border: 1px solid var(--border, #dce3eb); border-radius: 14px; padding: 18px; }
+.bulk-original, .bulk-example { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; font-size: .9rem; max-height: 280px; overflow: auto; }
+.bulk-images img { display: block; max-width: 100%; max-height: 420px; object-fit: contain; }
+.source-details { padding: .75rem 0; overflow-wrap: anywhere; }
+.source-details button { margin-top: .5rem; }
+.source-details fieldset { border: 0; padding: .75rem 0; min-width: 0; }
+.bulk-studio input[type=checkbox] { width: 20px; height: 20px; }

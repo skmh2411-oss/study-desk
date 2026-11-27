@@ -67,6 +67,11 @@ export async function previewGeneratedCards(raw: string, scope: CardScope) {
       tags: c.tags ?? [],
       importance: c.importance ?? 3,
       source: c.source ?? "",
+      cardType: c.cardType,
+      answerUnit: c.answerUnit,
+      conditions: c.conditions,
+      sourceUrl: c.sourceUrl,
+      citations: c.citations,
     };
   });
   // Ignore incoming IDs, scheduling and other record kinds. The normal importer

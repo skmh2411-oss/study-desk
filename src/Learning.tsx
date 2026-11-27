@@ -16,6 +16,8 @@ import {
   ChevronLeft,
 } from "lucide-react";
 import { db, saveEntity, trashEntity } from "./db";
+import { SourceDetails } from "./SourceDetails";
+import { referenceInstructions } from "./references";
 import { applyImport, type ImportPreview } from "./exchange";
 import {
   buildCardCreationPrompt,
@@ -37,7 +39,11 @@ import {
   type ReviewMode,
   asCards,
 } from "./review";
-type Props = { entities: Entity[]; onError: (e: unknown) => void };
+type Props = {
+  entities: Entity[];
+  onError: (e: unknown) => void;
+  onBulk?: () => void;
+};
 const active = (entities: Entity[], kind: string) =>
   entities.filter((e) => e.kind === kind && !e.deletedAt);
 const tags = (s: string) =>
@@ -624,6 +630,11 @@ const modeLabels: Record<ReviewMode, string> = {
   cram: "試験直前",
 };
 function CardAssist({ entities, onError }: Props) {
+  const referenceSites = useLiveQuery(
+    () => db.referenceSites.toArray(),
+    [],
+    [],
+  );
   const [text, setText] = useState(""),
     [source, setSource] = useState("");
   const [count, setCount] = useState(20),
@@ -639,6 +650,11 @@ function CardAssist({ entities, onError }: Props) {
   const [reviewed, setReviewed] = useState(false),
     [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const sourceRules = referenceInstructions(referenceSites, scope.targetId);
+  useEffect(() => {
+    setPrompt("");
+    setConfirmed(false);
+  }, [sourceRules]);
   const lock = useRef(false);
   const invalidatePrompt = () => {
     setPrompt("");
@@ -717,7 +733,11 @@ function CardAssist({ entities, onError }: Props) {
             type="button"
             onClick={() => {
               try {
-                setPrompt(buildCardCreationPrompt(text, count, source));
+                setPrompt(
+                  buildCardCreationPrompt(text, count, source) +
+                    "\n\n" +
+                    referenceInstructions(referenceSites, scope.targetId),
+                );
                 setConfirmed(false);
               } catch (e) {
                 onError(e);
@@ -867,7 +887,7 @@ function CardAssist({ entities, onError }: Props) {
     </section>
   );
 }
-export function CardsView({ entities, onError }: Props) {
+export function CardsView({ entities, onError, onBulk }: Props) {
   const cards = asCards(entities),
     prefs = useLiveQuery(() => db.settings.get("preferences"));
   const [mode, setMode] = useState<ReviewMode>("due"),
@@ -879,10 +899,13 @@ export function CardsView({ entities, onError }: Props) {
     [reveal, setReveal] = useState(false),
     [busy, setBusy] = useState(false),
     [assist, setAssist] = useState(false),
+    [typeFilter, setTypeFilter] = useState("all"),
     [status, setStatus] = useState("");
   const lock = useRef(false);
   const available = reviewQueue(
-    cards,
+    cards.filter(
+      (c) => typeFilter === "all" || (c.cardType || "qa") === typeFilter,
+    ),
     mode,
     prefs?.dailyNewLimit ?? 20,
     subject,
@@ -941,6 +964,7 @@ export function CardsView({ entities, onError }: Props) {
                   </div>
                 )}
                 <p className="muted">出典：{current.source || "未登録"}</p>
+                <SourceDetails record={current} onError={onError} />
                 <div className="rating-grid">
                   {["忘れた", "難しい", "普通", "簡単"].map((s, i) => (
                     <button
@@ -993,6 +1017,23 @@ export function CardsView({ entities, onError }: Props) {
           カード作成
         </button>
       </div>
+      {onBulk && (
+        <button className="primary" onClick={onBulk}>
+          端末内OCR・カード一括作成
+        </button>
+      )}
+      <label className="field">
+        カード種類で絞る
+        <select
+          value={typeFilter}
+          onChange={(e) => setTypeFilter(e.target.value)}
+        >
+          <option value="all">すべて</option>
+          <option value="qa">一問一答</option>
+          <option value="formula">計算式</option>
+          <option value="number">数値確認</option>
+        </select>
+      </label>
       <button
         type="button"
         className="secondary"
@@ -1141,6 +1182,9 @@ export function CardsView({ entities, onError }: Props) {
       </label>
       <div className="stack">
         {cards
+          .filter(
+            (c) => typeFilter === "all" || (c.cardType || "qa") === typeFilter,
+          )
           .filter((c) =>
             (c.question + c.answer + c.tags.join(" "))
               .toLowerCase()
@@ -1156,6 +1200,7 @@ export function CardsView({ entities, onError }: Props) {
                 次回 {new Date(c.fsrs.due).toLocaleString("ja-JP")} · 復習{" "}
                 {c.history.length}回
               </p>
+              <SourceDetails record={c} onError={onError} />
               <details>
                 <summary>復習履歴（{c.history.length}回）</summary>
                 {c.history
@@ -1226,7 +1271,13 @@ const blankQuestion = (): Partial<Question> => ({
   unitId: "",
 });
 export function PracticeView({ entities, onError }: Props) {
-  const questions = active(entities, "question") as Question[],
+  const [practiceSubject, setPracticeSubject] = useState("");
+  const [importantOnly, setImportantOnly] = useState(false);
+  const questions = (active(entities, "question") as Question[]).filter(
+      (q) =>
+        (!practiceSubject || q.subjectId === practiceSubject) &&
+        (!importantOnly || Number(q.importance || 3) >= 4),
+    ),
     attempts = active(entities, "attempt") as Attempt[];
   const [draft, setDraft] = useState<Partial<Question> | null>(null),
     [record, setRecord] = useState({
@@ -1558,6 +1609,32 @@ export function PracticeView({ entities, onError }: Props) {
           </button>
         </div>
       )}
+      <div className="grid">
+        <label className="field">
+          演習する科目
+          <select
+            value={practiceSubject}
+            onChange={(e) => setPracticeSubject(e.target.value)}
+          >
+            <option value="">すべての科目</option>
+            {entities
+              .filter((e) => e.kind === "subject")
+              .map((e) => (
+                <option key={e.id} value={e.id}>
+                  {e.title}
+                </option>
+              ))}
+          </select>
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={importantOnly}
+            onChange={(e) => setImportantOnly(e.target.checked)}
+          />{" "}
+          重要問題（重要度4・5）のみ
+        </label>
+      </div>
       <div className="row">
         <h3>問題一覧</h3>
         <button
@@ -1581,6 +1658,7 @@ export function PracticeView({ entities, onError }: Props) {
           <p className="muted">
             {q.cause} · {q.source || "出典未登録"}
           </p>
+          <SourceDetails record={q} onError={onError} />
           <div className="row">
             <button onClick={() => toCard(q)}>カードに変換</button>
             <button
