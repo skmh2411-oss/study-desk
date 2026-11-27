@@ -77,9 +77,7 @@ export default defineConfig(({ command, mode }) => {
         },
         workbox: {
           globPatterns: [
-            "**/*.{js,css,html,png,svg,woff2,wasm,gz,txt}",
-            "ocr/assets.json",
-            "ocr/licenses/*.json",
+            "**/*.{js,css,html,png,svg,woff2,txt}",
           ],
           navigateFallback: "index.html",
           maximumFileSizeToCacheInBytes: 4000000,
