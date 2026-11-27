@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import {
   BookOpen,
@@ -696,6 +696,9 @@ function TimerView({
     breakMinutes: 5,
     ...prefs.lastTimer,
   });
+  const manualForm = useRef<HTMLFormElement>(null);
+  const manualLock = useRef(false);
+  const [manualSaving, setManualSaving] = useState(false);
   const [tick, setTick] = useState(Date.now()),
     [editing, setEditing] = useState<Session | null>(null),
     [manual, setManual] = useState(false),
@@ -707,6 +710,12 @@ function TimerView({
     const id = setInterval(() => setTick(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
+  useEffect(() => {
+    if (manual) {
+      manualForm.current?.focus({ preventScroll: true });
+      manualForm.current?.scrollIntoView({ block: "start" });
+    }
+  }, [manual, editing]);
   const elapsed = timer ? elapsedMs(timer, tick) / 1000 : 0,
     limit =
       (timer?.mode === "pomodoro"
@@ -738,42 +747,51 @@ function TimerView({
   };
   const submitManual = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!Number.isFinite(minutes) || minutes <= 0 || minutes > 1440)
-      throw new Error("学習時間は1〜1440分で入力してください");
-    if (editing && !confirm("この学習記録の内容を更新しますか？")) return;
-    const start = new Date(date).getTime();
-    if (!Number.isFinite(start)) throw new Error("日時を確認してください");
-    const originalStart = editing?.segments[0]?.start;
-    const sameTime =
-      editing &&
-      Math.floor(start / 60000) === Math.floor((originalStart || 0) / 60000) &&
-      minutes === editing.minutes;
-    if (
-      editing &&
-      !sameTime &&
-      !confirm(
-        "開始日時・時間の変更により、一時停止を含む区間を連続した学習時間に置き換えます。反映しますか？",
+    if (manualLock.current) return;
+    manualLock.current = true;
+    setManualSaving(true);
+    try {
+      if (!Number.isFinite(minutes) || minutes <= 0 || minutes > 1440)
+        throw new Error("学習時間は1〜1440分で入力してください");
+      if (editing && !confirm("この学習記録の内容を更新しますか？")) return;
+      const start = new Date(date).getTime();
+      if (!Number.isFinite(start)) throw new Error("日時を確認してください");
+      const originalStart = editing?.segments[0]?.start;
+      const sameTime =
+        editing &&
+        Math.floor(start / 60000) ===
+          Math.floor((originalStart || 0) / 60000) &&
+        minutes === editing.minutes;
+      if (
+        editing &&
+        !sameTime &&
+        !confirm(
+          "開始日時・時間の変更により、一時停止を含む区間を連続した学習時間に置き換えます。反映しますか？",
+        )
       )
-    )
-      return;
-    await saveEntity(
-      {
-        ...editing,
-        kind: "session",
-        targetId: config.targetId || "",
-        subjectId: config.subjectId || "",
-        unitId: config.unitId || "",
-        method: config.method || "テキスト",
-        segments: sameTime
-          ? editing.segments
-          : [{ start, end: start + minutes * 60000 }],
-        minutes,
-        memo,
-      },
-      editing?.version,
-    );
-    setManual(false);
-    setEditing(null);
+        return;
+      await saveEntity(
+        {
+          ...editing,
+          kind: "session",
+          targetId: config.targetId || "",
+          subjectId: config.subjectId || "",
+          unitId: config.unitId || "",
+          method: config.method || "テキスト",
+          segments: sameTime
+            ? editing.segments
+            : [{ start, end: start + minutes * 60000 }],
+          minutes,
+          memo,
+        },
+        editing?.version,
+      );
+      setManual(false);
+      setEditing(null);
+    } finally {
+      manualLock.current = false;
+      setManualSaving(false);
+    }
   };
   const sessions = (entities.filter((e) => e.kind === "session") as Session[])
     .filter((s) => !filter || s.targetId === filter)
@@ -788,15 +806,86 @@ function TimerView({
         </div>
         <button
           className="secondary"
+          type="button"
+          aria-expanded={manual}
+          aria-controls="manual-entry"
+          disabled={manualSaving}
           onClick={() => {
             setManual(!manual);
             setEditing(null);
+            setDate(today() + "T12:00");
+            setMinutes(30);
+            setMemo("");
           }}
         >
           <Plus size={17} />
           手動で記録
         </button>
       </div>
+      {manual && (
+        <form
+          className="panel stack"
+          id="manual-entry"
+          style={{ scrollMarginTop: 96 }}
+          aria-labelledby="manual-entry-title"
+          ref={manualForm}
+          tabIndex={-1}
+          onSubmit={(e) => run(() => submitManual(e), onError)}
+        >
+          <h2 id="manual-entry-title">
+            {editing ? "学習記録の編集" : "学習時間を追加"}
+          </h2>
+          <Scope
+            entities={entities}
+            value={config}
+            required
+            onChange={(v) => setConfig({ ...config, ...v })}
+          />
+          <div className="grid">
+            <label className="field">
+              開始日時
+              <input
+                type="datetime-local"
+                required
+                value={date}
+                onChange={(e) => setDate(e.target.value)}
+              />
+            </label>
+            <label className="field">
+              学習時間（分）
+              <input
+                type="number"
+                required
+                min="0"
+                step="any"
+                max="1440"
+                value={minutes}
+                onChange={(e) => setMinutes(+e.target.value)}
+              />
+            </label>
+          </div>
+          <label className="field">
+            メモ
+            <input value={memo} onChange={(e) => setMemo(e.target.value)} />
+          </label>
+          <div className="row">
+            <button className="primary" disabled={manualSaving}>
+              {manualSaving ? "保存中…" : "保存"}
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              disabled={manualSaving}
+              onClick={() => {
+                setManual(false);
+                setEditing(null);
+              }}
+            >
+              キャンセル
+            </button>
+          </div>
+        </form>
+      )}
       <section className="panel timer-panel">
         <div className="tabs">
           {(["stopwatch", "countdown", "pomodoro"] as const).map((m, i) => (
@@ -954,60 +1043,6 @@ function TimerView({
           計測状態は自動保存されます。画面を閉じても、再起動時に復元します。
         </small>
       </section>
-      {manual && (
-        <form
-          className="panel stack"
-          onSubmit={(e) => run(() => submitManual(e), onError)}
-        >
-          <h2>{editing ? "学習記録の編集" : "学習時間を追加"}</h2>
-          <Scope
-            entities={entities}
-            value={config}
-            required
-            onChange={(v) => setConfig({ ...config, ...v })}
-          />
-          <div className="grid">
-            <label className="field">
-              開始日時
-              <input
-                type="datetime-local"
-                required
-                value={date}
-                onChange={(e) => setDate(e.target.value)}
-              />
-            </label>
-            <label className="field">
-              学習時間（分）
-              <input
-                type="number"
-                required
-                min="0"
-                step="any"
-                max="1440"
-                value={minutes}
-                onChange={(e) => setMinutes(+e.target.value)}
-              />
-            </label>
-          </div>
-          <label className="field">
-            メモ
-            <input value={memo} onChange={(e) => setMemo(e.target.value)} />
-          </label>
-          <div className="row">
-            <button className="primary">保存</button>
-            <button
-              type="button"
-              className="secondary"
-              onClick={() => {
-                setManual(false);
-                setEditing(null);
-              }}
-            >
-              キャンセル
-            </button>
-          </div>
-        </form>
-      )}
       <section className="panel">
         <div className="section-heading">
           <h2>
@@ -1294,16 +1329,19 @@ function PlanView({
                 />
               </label>
               <label className="field">
-                目標学習時間（分）
+                目標学習時間（時間）
                 <input
                   type="number"
-                  step="any"
+                  inputMode="decimal"
+                  step={
+                    edit && Number(edit.goalMinutes) % 60 !== 0 ? "any" : "1"
+                  }
                   min="0"
-                  max="1000000"
+                  max="876000"
                   required
-                  value={form.goalMinutes}
+                  value={form.goalMinutes / 60}
                   onChange={(e) =>
-                    setForm({ ...form, goalMinutes: +e.target.value })
+                    setForm({ ...form, goalMinutes: +e.target.value * 60 })
                   }
                 />
               </label>
@@ -1382,15 +1420,24 @@ function PlanView({
               </div>
               {kind === "subject" && (
                 <label className="field">
-                  必要学習時間（分）
+                  必要学習時間（時間）
                   <input
                     type="number"
+                    inputMode="decimal"
+                    step={
+                      edit && Number(edit.requiredMinutes) % 60 !== 0
+                        ? "any"
+                        : "1"
+                    }
                     min="0"
-                    max="1000000"
+                    max="876000"
                     required
-                    value={form.requiredMinutes}
+                    value={form.requiredMinutes / 60}
                     onChange={(e) =>
-                      setForm({ ...form, requiredMinutes: +e.target.value })
+                      setForm({
+                        ...form,
+                        requiredMinutes: +e.target.value * 60,
+                      })
                     }
                   />
                 </label>

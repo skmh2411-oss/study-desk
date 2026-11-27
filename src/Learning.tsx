@@ -16,6 +16,12 @@ import {
   ChevronLeft,
 } from "lucide-react";
 import { db, saveEntity, trashEntity } from "./db";
+import { applyImport, type ImportPreview } from "./exchange";
+import {
+  buildCardCreationPrompt,
+  previewGeneratedCards,
+  type CardScope,
+} from "./cardAssist";
 import {
   type Entity,
   type Note,
@@ -617,6 +623,250 @@ const modeLabels: Record<ReviewMode, string> = {
   random: "ランダム",
   cram: "試験直前",
 };
+function CardAssist({ entities, onError }: Props) {
+  const [text, setText] = useState(""),
+    [source, setSource] = useState("");
+  const [count, setCount] = useState(20),
+    [prompt, setPrompt] = useState("");
+  const [confirmed, setConfirmed] = useState(false),
+    [raw, setRaw] = useState("");
+  const [scope, setScope] = useState<CardScope>({
+    targetId: "",
+    subjectId: "",
+    unitId: "",
+  });
+  const [preview, setPreview] = useState<ImportPreview | null>(null);
+  const [reviewed, setReviewed] = useState(false),
+    [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const lock = useRef(false);
+  const invalidatePrompt = () => {
+    setPrompt("");
+    setConfirmed(false);
+    setMessage("");
+  };
+  const invalidateImport = () => {
+    setPreview(null);
+    setReviewed(false);
+    setMessage("");
+  };
+  const action = async (fn: () => Promise<void>) => {
+    if (lock.current) return;
+    lock.current = true;
+    setBusy(true);
+    setMessage("");
+    try {
+      await fn();
+    } catch (e) {
+      onError(e);
+    } finally {
+      lock.current = false;
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="panel stack" aria-label="テキスト・画像からカード作成">
+      <h3>テキスト・画像からカード作成</h3>
+      <p className="muted">
+        テキストは下に貼り付け、スクショや写真はChatGPT側に添付します。アプリが画像を自動解析・送信する機能ではありません。生成後のカードを確認して一括追加できます。有料APIは使いません。
+      </p>
+      <details open>
+        <summary>1. ChatGPTに渡す依頼文を作る</summary>
+        <div className="stack">
+          <label className="field">
+            元テキスト（画像を使う場合は空欄で可）
+            <textarea
+              rows={6}
+              maxLength={50000}
+              value={text}
+              onChange={(e) => {
+                setText(e.target.value);
+                invalidatePrompt();
+              }}
+            />
+          </label>
+          <div className="grid">
+            <label className="field">
+              作成する最大枚数
+              <input
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={100}
+                step={1}
+                value={count}
+                onChange={(e) => {
+                  setCount(+e.target.value);
+                  invalidatePrompt();
+                }}
+              />
+            </label>
+            <label className="field">
+              資料の出典・基準日（任意）
+              <input
+                maxLength={1000}
+                value={source}
+                onChange={(e) => {
+                  setSource(e.target.value);
+                  invalidatePrompt();
+                }}
+              />
+            </label>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              try {
+                setPrompt(buildCardCreationPrompt(text, count, source));
+                setConfirmed(false);
+              } catch (e) {
+                onError(e);
+              }
+            }}
+          >
+            カード作成の依頼文を作る
+          </button>
+          {prompt && (
+            <>
+              <label className="field">
+                ChatGPTへ共有する依頼文
+                <textarea rows={8} readOnly value={prompt} />
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={confirmed}
+                  onChange={(e) => setConfirmed(e.target.checked)}
+                />{" "}
+                共有する内容を確認しました
+              </label>
+              <button
+                type="button"
+                className="primary"
+                disabled={!confirmed || busy}
+                onClick={() =>
+                  void action(async () => {
+                    await navigator.clipboard.writeText(prompt);
+                    setMessage(
+                      "コピーしました。ChatGPTに貼り付け、画像を使う場合は同じメッセージに添付してください。",
+                    );
+                  })
+                }
+              >
+                依頼文をコピー
+              </button>
+            </>
+          )}
+          <p className="muted">
+            画像の文字や生成された解答には誤りがあり得ます。氏名や秘密情報は共有前に取り除いてください。ChatGPTの利用上限が適用されます。
+          </p>
+        </div>
+      </details>
+      <details open>
+        <summary>2. 返答のJSONを確認して取り込む</summary>
+        <div className="stack">
+          <p className="muted">
+            カードの保存先を選びます。既存カードは上書きせず、同じ内容は重複として除外します。
+          </p>
+          <fieldset disabled={busy}>
+            <Classification
+              entities={entities}
+              value={scope}
+              onChange={(v) => {
+                setScope(v);
+                invalidateImport();
+              }}
+            />
+          </fieldset>
+          <label className="field">
+            生成カードのJSON
+            <textarea
+              rows={7}
+              value={raw}
+              disabled={busy}
+              onChange={(e) => {
+                setRaw(e.target.value);
+                invalidateImport();
+              }}
+              placeholder={'{"cards":[{"question":"問題","answer":"解答"}]}'}
+            />
+          </label>
+          <button
+            type="button"
+            disabled={!raw.trim() || busy}
+            onClick={() =>
+              void action(async () => {
+                setPreview(null);
+                setReviewed(false);
+                setPreview(await previewGeneratedCards(raw, scope));
+              })
+            }
+          >
+            カードを検証・プレビュー
+          </button>
+          {preview && (
+            <div className="stack">
+              <p role="status">
+                追加候補 {preview.records.length}枚 / 重複 {preview.duplicates}
+                枚
+              </p>
+              <div style={{ maxHeight: 360, overflow: "auto" }}>
+                {preview.records.map((c, i) => (
+                  <article className="callout" key={c.id}>
+                    <strong>
+                      {i + 1}. {String(c.question)}
+                    </strong>
+                    <p style={{ whiteSpace: "pre-wrap" }}>{String(c.answer)}</p>
+                    {!!c.explanation && (
+                      <p className="muted" style={{ whiteSpace: "pre-wrap" }}>
+                        {String(c.explanation)}
+                      </p>
+                    )}
+                    <small>
+                      出典：{String(c.source || "未登録")} · 重要度{" "}
+                      {Number(c.importance)}
+                    </small>
+                  </article>
+                ))}
+              </div>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={reviewed}
+                  onChange={(e) => setReviewed(e.target.checked)}
+                />{" "}
+                問題と解答・保存先を確認しました
+              </label>
+              <button
+                type="button"
+                className="primary"
+                disabled={!reviewed || !preview.records.length || busy}
+                onClick={() =>
+                  void action(async () => {
+                    const result = await applyImport(preview);
+                    setPreview(null);
+                    setRaw("");
+                    setReviewed(false);
+                    setMessage(
+                      `${result.added}枚のカードを追加しました（重複等 ${result.skipped}枚を除外）。`,
+                    );
+                  })
+                }
+              >
+                確認したカードを追加
+              </button>
+            </div>
+          )}
+        </div>
+      </details>
+      {message && (
+        <p role="status" className="notice">
+          {message}
+        </p>
+      )}
+    </section>
+  );
+}
 export function CardsView({ entities, onError }: Props) {
   const cards = asCards(entities),
     prefs = useLiveQuery(() => db.settings.get("preferences"));
@@ -628,6 +878,7 @@ export function CardsView({ entities, onError }: Props) {
     [index, setIndex] = useState(0),
     [reveal, setReveal] = useState(false),
     [busy, setBusy] = useState(false),
+    [assist, setAssist] = useState(false),
     [status, setStatus] = useState("");
   const lock = useRef(false);
   const available = reviewQueue(
@@ -742,6 +993,20 @@ export function CardsView({ entities, onError }: Props) {
           カード作成
         </button>
       </div>
+      <button
+        type="button"
+        className="secondary"
+        aria-expanded={assist}
+        aria-controls="card-assist"
+        onClick={() => setAssist(!assist)}
+      >
+        テキスト・画像から作成
+      </button>
+      {assist && (
+        <div id="card-assist">
+          <CardAssist entities={entities} onError={onError} />
+        </div>
+      )}
       <div className="panel stack">
         <div className="row">
           <div>
