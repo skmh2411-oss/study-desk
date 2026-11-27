@@ -104,7 +104,7 @@ export function ChatGPTPanel({
     <section className="panel stack">
       <h3>ChatGPTに相談する</h3>
       <p className="muted">
-        相談する項目だけを選びます。最初は0件です。APIや自動送信は使わず、コピーしてChatGPTに貼り付けます。返答のJSONは「バックアップ」から検証して取り込みます。
+        相談する項目だけを選びます。最初は0件です。APIや自動送信は使わず、コピーしてChatGPTに貼り付けます。会話からの問題・ノート作成は上の専用画面を使ってください。この相談の返答は従来のバックアップ形式です。
       </p>
       <details>
         <summary>登録した参照サイトと利用条件</summary>
