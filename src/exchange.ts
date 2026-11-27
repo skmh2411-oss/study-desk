@@ -51,7 +51,7 @@ export function entityContentKey(r: Entity, includeScheduling = false) {
               .join(",") +
             "}"
           : JSON.stringify(v);
-  if (!includeScheduling && (r.kind === "card" || r.kind === "question")) {
+  if (!includeScheduling && ["card", "question", "note"].includes(r.kind)) {
     // Provenance/review state must not make the same study content new again.
     const {
       batchId,

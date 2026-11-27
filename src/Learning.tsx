@@ -578,6 +578,14 @@ export function NotesView({ entities, onError }: Props) {
                 <>
                   <h2>{selectedNote?.title}</h2>
                   <SafeMarkdown>{selectedNote?.body || ""}</SafeMarkdown>
+                  {selectedNote?.originalText && (
+                    <details>
+                      <summary>根拠の原文（未確認）</summary>
+                      <pre className="bulk-original">
+                        {String(selectedNote.originalText)}
+                      </pre>
+                    </details>
+                  )}
                   <p className="muted">
                     出典：{selectedNote?.source || "未登録"} / 確認日：
                     {selectedNote?.verifiedOn || "未登録"}
@@ -1019,7 +1027,7 @@ export function CardsView({ entities, onError, onBulk }: Props) {
       </div>
       {onBulk && (
         <button className="primary" onClick={onBulk}>
-          端末内OCR・カード一括作成
+          GPT会話からカードを取り込む
         </button>
       )}
       <label className="field">
@@ -1041,7 +1049,7 @@ export function CardsView({ entities, onError, onBulk }: Props) {
         aria-controls="card-assist"
         onClick={() => setAssist(!assist)}
       >
-        テキスト・画像から作成
+        GPTへ渡すカード依頼文（従来形式）
       </button>
       {assist && (
         <div id="card-assist">

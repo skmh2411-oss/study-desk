@@ -42,6 +42,7 @@ import { NotesView, CardsView, PracticeView } from "./Learning";
 import { SettingsView } from "./Settings";
 import { ChatGPTPanel } from "./ChatGPTPanel";
 import { BulkStudio } from "./BulkStudio";
+import { ConversationTransfer } from "./ConversationTransfer";
 import { ReferenceManager } from "./ReferenceManager";
 import { installReconnectSync } from "./sync";
 import {
@@ -303,25 +304,34 @@ export default function App() {
           ) : page === "GPTに相談" ? (
             <div className="stack">
               <h1>GPTに相談</h1>
-              <ChatGPTPanel entities={entities} onError={onError} />
+              <ConversationTransfer entities={entities} onError={onError} />
+              <details>
+                <summary>アプリ内の学習データを選んで相談する</summary>
+                <ChatGPTPanel entities={entities} onError={onError} />
+              </details>
               <button onClick={() => setPage("参照サイト")}>
                 参照サイトを管理
               </button>
             </div>
           ) : page === "カード一括作成" || page === "問題取り込み" ? (
-            <BulkStudio
-              key={page}
-              entities={active}
-              onError={onError}
-              initialKind={page === "問題取り込み" ? "question" : "card"}
-            />
+            <div className="stack">
+              <button className="primary" onClick={() => setPage("GPTに相談")}>
+                GPT会話から問題・ノートを取り込む
+              </button>
+              <BulkStudio
+                key={page}
+                entities={active}
+                onError={onError}
+                initialKind={page === "問題取り込み" ? "question" : "card"}
+              />
+            </div>
           ) : page === "参照サイト" ? (
             <ReferenceManager entities={active} onError={onError} />
           ) : (
             <CardsView
               entities={active}
               onError={onError}
-              onBulk={() => setPage("カード一括作成")}
+              onBulk={() => setPage("GPTに相談")}
             />
           )}
         </main>
@@ -430,11 +440,11 @@ function Dashboard({
           className="primary consultation-main"
           onClick={() => onPage("GPTに相談")}
         >
-          GPTに相談
+          GPTに相談・会話から学習素材を取り込む
         </button>
         <div className="grid three">
           <button onClick={() => onPage("カード一括作成")}>
-            画像・テキストからカード一括作成
+            整形済みカードを一括登録
           </button>
           <button onClick={() => onPage("問題取り込み")}>
             科目別・重要問題を取り込む
@@ -442,7 +452,7 @@ function Dashboard({
           <button onClick={() => onPage("参照サイト")}>参照サイトを登録</button>
         </div>
         <small className="muted">
-          画像の文字読み取りは端末内で処理。GPTへの共有は内容を選んで確認できます。
+          GPTの会話から問題・ノートをまとめて移せます。JSON・Markdownで取り込み、確認して保存します。
         </small>
       </section>
       <div className="tabs">

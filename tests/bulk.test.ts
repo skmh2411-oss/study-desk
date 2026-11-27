@@ -63,18 +63,22 @@ describe("bulk extraction and approved storage", () => {
     expect((await db.records.get(changed.id))?.deletedAt).toBeTruthy();
     expect((await db.records.get(changed.id))?.answer).toBe("答え");
   });
-  it("keeps QA pairs, formulas and numerical conditions without invention", () => {
+  it("retains multiline question bodies and conditions instead of splitting prose", () => {
     const rows = extractCandidates(
-      "Q: 用語の意味は？\nA: 用語の定義\n割合 = 部分 ÷ 全体 × 100\n上限：30日以内（申込日から）\n判読できない行",
-      settings,
+      "Q: 次の記述の正誤を答えなさい。\n条件Aの場合には期限は30日以内である。\nA: ○\nただし条件Bには適用しない。",
+      { ...settings, kind: "question" },
     );
-    expect(rows).toHaveLength(4);
-    expect(rows[0].answer).toBe("用語の定義");
-    expect(rows[1].cardType).toBe("formula");
-    expect(rows[2].cardType).toBe("number");
-    expect(rows[2].answer).toBe("30日以内（申込日から）");
-    expect(rows[3].answer).toBe("");
-    expect(rows[3].selected).toBe(false);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].question).toContain("条件Aの場合には期限は30日以内である。");
+    expect(rows[0].answer).toBe("○\nただし条件Bには適用しない。");
+    // A multiline explanation is preserved, never silently converted to a valid ○ choice.
+    expect(rows[0].warnings.join()).toContain("選択肢");
+    expect(() =>
+      extractCandidates("上限：100万円\nただしAの場合のみ。", settings),
+    ).toThrow("一般文章");
+    expect(() =>
+      extractCandidates("割合 = 部分 ÷ 全体 × 100", settings),
+    ).toThrow("一般文章");
   });
   it("parses quoted multiline CSV, TSV headers, importance and choice arrays", () => {
     const rows = extractCandidates(
@@ -214,7 +218,7 @@ describe("bulk extraction and approved storage", () => {
     expect(() => extractCandidates("{bad", settings)).toThrow("JSON");
     expect(() => extractCandidates("x".repeat(500001), settings)).toThrow();
     expect(() =>
-      extractCandidates(Array(101).fill("項目: 答え").join("\n"), settings),
+      extractCandidates(Array(101).fill("検証問題\t検証解答").join("\n"), settings),
     ).toThrow("100");
     expect(() =>
       extractCandidates('{"records":[{"kind":"note"}]}', settings),
