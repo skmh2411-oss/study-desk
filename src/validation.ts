@@ -341,5 +341,25 @@ export function normalizePreferences(raw: unknown): Preferences {
         last[k] = number(t[k], `lastTimer.${k}`, 0.000001, 1440);
     p.lastTimer = last;
   }
+  if (raw.lastLearningScope !== undefined) {
+    if (!isObject(raw.lastLearningScope)) fail("lastLearningScope");
+    p.lastLearningScope = {
+      targetId: text(
+        raw.lastLearningScope.targetId,
+        "lastLearningScope.targetId",
+        "",
+      ),
+      subjectId: text(
+        raw.lastLearningScope.subjectId,
+        "lastLearningScope.subjectId",
+        "",
+      ),
+      unitId: text(
+        raw.lastLearningScope.unitId,
+        "lastLearningScope.unitId",
+        "",
+      ),
+    };
+  }
   return p;
 }
