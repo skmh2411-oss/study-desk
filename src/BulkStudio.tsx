@@ -13,9 +13,6 @@ import {
   type BulkCandidate,
   type BulkSettings,
 } from "./bulk";
-import { recognizeImages } from "./ocr";
-import { mergeSelectedImages } from "./imageSelection";
-import type { ChangeEvent } from "react";
 const labels: Record<CardType, string> = {
   qa: "一問一答",
   formula: "計算式",
@@ -41,54 +38,28 @@ export function BulkStudio({
     sourceUrl: "",
     asOf: "",
   });
-  const photoInput = useRef<HTMLInputElement>(null),
-    fileImageInput = useRef<HTMLInputElement>(null);
-  const [raw, setRaw] = useState(""),
-    [images, setImages] = useState<File[]>([]);
-  const [imageUrls, setImageUrls] = useState<string[]>([]);
+  const [raw, setRaw] = useState("");
   const [rows, setRows] = useState<BulkCandidate[]>([]),
     [preview, setPreview] = useState<ImportPreview | null>(null);
   const [busy, setBusy] = useState(false),
-    [progress, setProgress] = useState(""),
     [message, setMessage] = useState("");
   const [confirmed, setConfirmed] = useState(false),
     [minImportance, setMinImportance] = useState(1);
   const [filterType, setFilterType] = useState("all"),
     [find, setFind] = useState("");
   const sites = useLiveQuery(() => db.referenceSites.toArray(), [], []);
-  const controller = useRef<AbortController | null>(null),
-    lock = useRef(false),
+  const lock = useRef(false),
     mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
-      controller.current?.abort();
     };
   }, []);
-  useEffect(() => {
-    const urls = images.map((file) => URL.createObjectURL(file));
-    setImageUrls(urls);
-    return () => urls.forEach((url) => URL.revokeObjectURL(url));
-  }, [images]);
   const invalidate = () => {
     setPreview(null);
     setConfirmed(false);
     setMessage("");
-  };
-  const selectImages = (event: ChangeEvent<HTMLInputElement>) => {
-    const incoming = Array.from(event.currentTarget.files || []);
-    // Allow the same file to be selected again, including after removing it.
-    event.currentTarget.value = "";
-    if (!incoming.length) return;
-    try {
-      const next = mergeSelectedImages(images, incoming);
-      setImages(next);
-      setProgress("");
-      invalidate();
-    } catch (error) {
-      onError(error);
-    }
   };
   const changeSettings = (patch: Partial<BulkSettings>) => {
     setSettings({ ...settings, ...patch });
@@ -106,11 +77,7 @@ export function BulkStudio({
     try {
       await fn();
     } catch (e) {
-      if (mounted.current) {
-        if (e instanceof DOMException && e.name === "AbortError")
-          setProgress("画像の読み取りを中止しました。");
-        else onError(e);
-      }
+      if (mounted.current) onError(e);
     } finally {
       lock.current = false;
       if (mounted.current) setBusy(false);
@@ -170,117 +137,14 @@ export function BulkStudio({
         <h1>
           {initialKind === "question"
             ? "科目別・重要問題を取り込む"
-            : "暗記カードをまとめて作る"}
+            : "整形済みカードを一括登録"}
         </h1>
         <p className="muted">
-          端末内で文字を読み取り、必要な候補を選んで保存します。説明の自動生成や外部サイトの巡回は行いません。
+          問題と解答が整ったJSON・CSV・TSV・Q/Aだけを登録します。一般文章を機械的に分割して問題にする機能はありません。会話からの作成は「GPTに相談」の新しい取り込み画面を使ってください。
         </p>
       </div>
       <fieldset disabled={busy} className="panel stack">
         <h2>素材と保存先</h2>
-        <section
-          className="stack image-selection"
-          aria-labelledby="image-selection-title"
-        >
-          <h3 id="image-selection-title">写真・スクショから読み取る</h3>
-          <p className="muted">
-            自分で選んだ画像だけを、この画面に一時的に読み込みます。写真フォルダ全体の読み取り・画像の外部送信・元画像の移動や削除は行いません。
-          </p>
-          <input
-            ref={photoInput}
-            type="file"
-            accept="image/*"
-            multiple
-            hidden
-            aria-label="写真・スクショの選択"
-            onChange={selectImages}
-          />
-          <input
-            ref={fileImageInput}
-            type="file"
-            multiple
-            hidden
-            aria-label="ファイル内の画像の選択"
-            onChange={selectImages}
-          />
-          <div className="image-selection-actions">
-            <button
-              type="button"
-              className="primary"
-              onClick={() => photoInput.current?.click()}
-            >
-              写真・スクショを追加
-            </button>
-            <button
-              type="button"
-              className="secondary"
-              onClick={() => fileImageInput.current?.click()}
-            >
-              ファイルから画像を追加
-            </button>
-          </div>
-          <p className="muted">
-            写真から追加する場合は、表示されるメニューの「写真ライブラリ」を選択してください。ファイルが薄く表示される場合は「ファイルから画像を追加」をお試しください。画像以外は取り込みません。
-          </p>
-          <p role="status">選択済み {images.length} / 5枚（各10MBまで）</p>
-          <div className="bulk-images">
-            {images.map((f, i) => (
-              <details key={`${f.name}-${i}`}>
-                <summary>{f.name}</summary>
-                <button
-                  type="button"
-                  className="secondary"
-                  aria-label={`${f.name}を選択から外す`}
-                  onClick={() => {
-                    setImages(images.filter((_, index) => index !== i));
-                    setProgress("");
-                    invalidate();
-                  }}
-                >
-                  この画像を外す
-                </button>
-                {imageUrls[i] && (
-                  <img
-                    loading="lazy"
-                    src={imageUrls[i]}
-                    alt={`読取資料 ${i + 1}`}
-                  />
-                )}
-              </details>
-            ))}
-          </div>
-          <button
-            type="button"
-            disabled={!images.length}
-            onClick={() =>
-              void action(async () => {
-                controller.current = new AbortController();
-                const result = await recognizeImages(images, {
-                  signal: controller.current.signal,
-                  onProgress: (s) => {
-                    if (mounted.current) setProgress(s);
-                  },
-                });
-                if (!mounted.current || controller.current.signal.aborted)
-                  return;
-                setRaw((old) =>
-                  [old, result.map((x) => x.text).join("\n\n")]
-                    .filter(Boolean)
-                    .join("\n\n"),
-                );
-                invalidate();
-                setProgress(
-                  "読み取り完了。素材テキストに追加しました。誤読を確認してください。",
-                );
-              })
-            }
-          >
-            画像の文字を読み取る
-          </button>
-          <p className="muted">
-            印刷された日本語・英語が対象です。手書き、複雑な表・分数・添字は修正が必要です。HEICなどは端末の対応状況によって開けない場合があります。読み取った文字は、内容を確認して保存するまで学習データに登録されません。
-          </p>
-        </section>
         <div className="grid three">
           <label className="field">
             保存する種類
@@ -425,7 +289,7 @@ export function BulkStudio({
           </label>
         </div>
         <label className="field">
-          テキスト・CSV・JSONを取り込む（画像は上のボタンから）
+          整形済みのテキスト・CSV・JSONファイル
           <input
             type="file"
             accept=".txt,.csv,.tsv,.json,text/plain,text/csv,application/json"
@@ -462,8 +326,7 @@ export function BulkStudio({
           />
         </label>
         <p className="muted">
-          「Q: /
-          A:」、用語と答えのタブ区切り、公式、数値一覧を取り込めます。対応が分からない行は答えが空の候補になり、確認が必要です。
+          Q:とA:で区切った問題・解答、タブ区切り、CSV・JSONに対応します。改行された問題本文・解答・例外はまとめて保持します。一般文章や数値一覧はGPTで問題・解答に整えてください。
         </p>
         <details>
           <summary>CSV・JSONの形式</summary>
@@ -482,22 +345,7 @@ export function BulkStudio({
           素材から候補を作る
         </button>
       </fieldset>
-      {busy && (
-        <div className="notice" role="status">
-          {progress || "処理しています…"}
-          <button
-            type="button"
-            disabled={!controller.current || controller.current.signal.aborted}
-            onClick={() => {
-              controller.current?.abort();
-              setProgress("読み取りを中止しました。");
-            }}
-          >
-            画像読取を中止
-          </button>
-        </div>
-      )}
-      {progress && !busy && <p role="status">{progress}</p>}
+      {busy && <p role="status">処理しています…</p>}
       {!!rows.length && (
         <fieldset disabled={busy} className="panel stack">
           <h2>候補を選んで修正する</h2>

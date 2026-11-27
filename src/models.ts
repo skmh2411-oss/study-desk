@@ -73,7 +73,7 @@ export interface Task extends Entity {
   review: boolean;
   planId: string;
 }
-export interface Note extends Entity {
+export interface Note extends Entity, LearningSourceMetadata {
   kind: "note";
   title: string;
   body: string;

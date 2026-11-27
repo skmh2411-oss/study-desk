@@ -246,7 +246,7 @@ export function normalizeEntity(raw: unknown): Entity {
     );
     if (!Number.isInteger(r.wrongCount)) fail("wrongCount");
   }
-  if (kind === "card" || kind === "question") {
+  if (kind === "card" || kind === "question" || kind === "note") {
     if (kind === "question") {
       if (raw.importance !== undefined) {
         r.importance = number(raw.importance, "importance", 1, 5);

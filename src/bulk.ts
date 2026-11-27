@@ -202,77 +202,61 @@ export function extractCandidates(
         original: cols.join(" / "),
       }));
     } else {
-      const lines = raw
-        .split(/\r?\n/)
-        .map((x) => x.trim())
-        .filter(Boolean);
-      let pending = "";
-      for (const line of lines) {
-        if (/^(?:Q|問(?:題)?)[：:.\s]/i.test(line)) {
-          if (pending)
-            rows.push({
-              row: { question: pending, answer: "" },
-              original: pending,
-            });
-          pending = line.replace(/^(?:Q|問(?:題)?)[：:.\s]+/i, "");
-          continue;
-        }
-        if (pending && /^(?:A|答(?:え)?|解答)[：:.\s]/i.test(line)) {
-          rows.push({
-            row: {
-              question: pending,
-              answer: line.replace(/^(?:A|答(?:え)?|解答)[：:.\s]+/i, ""),
-            },
-            original: pending + "\n" + line,
-          });
-          pending = "";
-          continue;
-        }
-        if (/^\|?\s*[-:]+\s*\|/.test(line)) continue;
-        const parts = line.includes("\t")
-          ? line.split("\t")
-          : line.includes("|")
-            ? line.replace(/^\||\|$/g, "").split("|")
-            : line.split(/[：:]/);
+      const lines = raw.split(/\r?\n/);
+      const nonempty = lines.map((x) => x.trim()).filter(Boolean);
+      if (!nonempty.some((line) => /^(?:Q|問(?:題)?)[：:.\s]/i.test(line))) {
         if (
-          parts.length >= 2 &&
-          parts[0].trim() &&
-          parts.slice(1).join(":").trim()
-        ) {
-          if (
-            (line.includes("\t") || line.includes("|")) &&
-            /^(用語|問題|項目)$/.test(parts[0].trim()) &&
-            /^(定義|解答|答え|数値)$/.test(parts[1].trim())
+          !nonempty.every(
+            (line) =>
+              line.split("\t").length === 2 &&
+              line.split("\t").every((x) => x.trim()),
           )
-            continue;
-          rows.push({
-            row: {
-              question: parts[0].trim(),
-              answer: parts
-                .slice(1)
-                .join(line.includes("|") ? " | " : ":")
-                .trim(),
-            },
-            original: line,
-          });
-        } else if (/[=＝]/.test(line)) {
-          const lhs = line.split(/[=＝]/)[0].trim();
-          rows.push({
-            row: {
-              question: `「${lhs}」を求める式は？`,
-              answer: line,
-              cardType: "formula",
-            },
-            original: line,
-          });
-        } else
-          rows.push({ row: { question: line, answer: "" }, original: line });
-      }
-      if (pending)
-        rows.push({
-          row: { question: pending, answer: "" },
-          original: pending,
+        )
+          throw new Error(
+            "一般文章からは作成できません。GPTで問題・解答を整え、JSON・CSVまたはQ:/A:形式で取り込んでください。",
+          );
+        rows = nonempty.map((line) => {
+          const [question, answer] = line.split("\t");
+          return { row: { question, answer }, original: line };
         });
+      } else {
+        let question: string[] = [],
+          answer: string[] = [],
+          inAnswer = false;
+        const flush = () => {
+          if (question.length)
+            rows.push({
+              row: {
+                question: question.join("\n").trim(),
+                answer: answer.join("\n").trim(),
+              },
+              original: [...question, ...answer].join("\n").trim(),
+            });
+        };
+        for (const line of lines) {
+          if (/^(?:Q|問(?:題)?)[：:.\s]/i.test(line)) {
+            flush();
+            question = [line.replace(/^(?:Q|問(?:題)?)[：:.\s]+/i, "")];
+            answer = [];
+            inAnswer = false;
+          } else if (
+            /^(?:A|答(?:え)?|解答)[：:.\s]/i.test(line) &&
+            question.length
+          ) {
+            if (inAnswer)
+              throw new Error(
+                "解答の区切りが重複しています。Q:/A:形式を確認してください。",
+              );
+            inAnswer = true;
+            answer.push(line.replace(/^(?:A|答(?:え)?|解答)[：:.\s]+/i, ""));
+          } else if (question.length) (inAnswer ? answer : question).push(line);
+          else if (line.trim())
+            throw new Error(
+              "Q:/A:以外の文章が混在しています。原文を省略せずGPTで整えてください。",
+            );
+        }
+        flush();
+      }
     }
   }
   if (!rows.length) throw new Error("取り込み候補がありません。");
