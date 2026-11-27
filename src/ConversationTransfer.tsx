@@ -1,15 +1,19 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
-import { db } from "./db";
-import { applyImport, type ImportPreview } from "./exchange";
+import { db, getPreferences, setPreferences } from "./db";
+import { decodeLearningBytes } from "./learningFormats";
+import { type ImportPreview } from "./exchange";
 import { SafeMarkdown } from "./Learning";
 import { referenceInstructions, citationSiteStatus } from "./references";
 import type { Entity } from "./models";
 import {
   buildConversationPrompt,
   materialLabels,
-  parseLearningPackage,
+  parseLearningInput,
+  missingEvidenceCount,
+  resolveLearningScope,
   previewLearningImport,
+  applyLearningImport,
   type MaterialDraft,
   type MaterialKind,
   type TransferScope,
@@ -17,7 +21,6 @@ import {
 
 export function ConversationTransfer({
   entities,
-  onError,
 }: {
   entities: Entity[];
   onError: (e: unknown) => void;
@@ -33,8 +36,31 @@ export function ConversationTransfer({
     [promptApproved, setPromptApproved] = useState(false);
   const [raw, setRaw] = useState(""),
     [fileName, setFileName] = useState("");
+  const [asNote, setAsNote] = useState(false),
+    [inputError, setInputError] = useState(""),
+    [actionError, setActionError] = useState(""),
+    [readStatus, setReadStatus] = useState(""),
+    [missingApproved, setMissingApproved] = useState(false);
+  const inputFeedback = useRef<HTMLDivElement>(null),
+    actionFeedback = useRef<HTMLDivElement>(null),
+    scopeTouched = useRef(false);
+  const preferences = useLiveQuery(() => getPreferences(), []);
+  useEffect(() => {
+    if (!scopeTouched.current && preferences)
+      setScope(resolveLearningScope(entities, preferences.lastLearningScope));
+  }, [preferences, entities]);
+  useEffect(() => {
+    if (inputError || readStatus) {
+      inputFeedback.current?.focus({ preventScroll: true });
+      inputFeedback.current?.scrollIntoView({ block: "nearest" });
+    }
+  }, [inputError, readStatus]);
   const [drafts, setDrafts] = useState<MaterialDraft[]>([]),
     [preview, setPreview] = useState<ImportPreview | null>(null);
+  const [preparedScope, setPreparedScope] = useState<TransferScope | null>(
+      null,
+    ),
+    [preparedGeneration, setPreparedGeneration] = useState(-1);
   const [scope, setScope] = useState<TransferScope>({
     targetId: "",
     subjectId: "",
@@ -45,6 +71,12 @@ export function ConversationTransfer({
   const [approved, setApproved] = useState(false),
     [message, setMessage] = useState(""),
     [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (actionError || message) {
+      actionFeedback.current?.focus({ preventScroll: true });
+      actionFeedback.current?.scrollIntoView({ block: "nearest" });
+    }
+  }, [actionError, message]);
   const lock = useRef(false),
     generation = useRef(0),
     fileInput = useRef<HTMLInputElement>(null);
@@ -52,9 +84,24 @@ export function ConversationTransfer({
   const invalidate = () => {
     generation.current++;
     setPreview(null);
+    setPreparedScope(null);
     setApproved(false);
     setMessage("");
+    setActionError("");
+    setMissingApproved(false);
   };
+  const resolvedScope = resolveLearningScope(entities, scope);
+  const destinationSignature = JSON.stringify({ scope, resolvedScope });
+  useEffect(() => {
+    invalidate();
+  }, [destinationSignature]);
+  const currentPreview =
+    !!preview &&
+    !!preparedScope &&
+    !inputError &&
+    preparedGeneration === generation.current &&
+    JSON.stringify(preparedScope) === JSON.stringify(scope) &&
+    JSON.stringify(scope) === JSON.stringify(resolvedScope);
   const promptSignature = JSON.stringify({
     kinds,
     count,
@@ -63,14 +110,34 @@ export function ConversationTransfer({
   });
   const [generatedSignature, setGeneratedSignature] = useState("");
   const current = promptSignature === generatedSignature;
-  const work = async (fn: () => Promise<void>) => {
+  const reportError = (e: unknown, area: "input" | "action" = "action") => {
+    const text = e instanceof Error ? e.message : String(e);
+    if (area === "input") {
+      setInputError(text);
+      setReadStatus("");
+    } else setActionError(text);
+  };
+  const changeScope = (next: TransferScope) => {
+    scopeTouched.current = true;
+    setScope(next);
+    invalidate();
+    void setPreferences({ lastLearningScope: next }).catch((e) =>
+      reportError(e),
+    );
+  };
+  const work = async (
+    fn: () => Promise<void>,
+    area: "input" | "action" = "action",
+  ) => {
     if (lock.current) return;
     lock.current = true;
     setBusy(true);
+    if (area === "input") invalidate();
+    setActionError("");
     try {
       await fn();
     } catch (e) {
-      onError(e);
+      reportError(e, area);
     } finally {
       lock.current = false;
       setBusy(false);
@@ -92,9 +159,13 @@ export function ConversationTransfer({
       Number(d.record.importance) >= minImportance,
   );
   const selected = drafts.filter((d) => d.selected);
+  const missing = missingEvidenceCount(drafts);
   const decode = (input: string, name: string) => {
     try {
-      const next = parseLearningPackage(input, name);
+      invalidate();
+      setInputError("");
+      const result = parseLearningInput(input, name, asNote);
+      const next = result.drafts;
       if (
         drafts.length &&
         !confirm(
@@ -106,15 +177,20 @@ export function ConversationTransfer({
       setFileName(name);
       setDrafts(next);
       invalidate();
+      setFilter("all");
+      setMinImportance(1);
+      setReadStatus(
+        `${name || "貼り付けた内容"}：${result.formatLabel}として${next.length}件を読み込みました。下の候補を確認してください。まだ保存していません。`,
+      );
     } catch (e) {
-      onError(e);
+      reportError(e, "input");
     }
   };
   return (
     <section className="panel stack conversation-transfer">
       <h2>GPT会話から問題・ノートを取り込む</h2>
       <p>
-        会話を自動取得しません。依頼文を学習したGPTのチャットへ貼り付け、返答をJSONファイルまたはコピーで戻します。画像の解析が必要なら、GPTのチャットで必要な画像を自分で添付してください。
+        会話を自動取得しません。依頼文を学習したGPTのチャットへ貼り付け、返答をファイルまたはコピーで戻します。画像の解析が必要なら、GPTのチャットで必要な画像を自分で添付してください。
       </p>
       <details open>
         <summary>1．学習したGPTの会話に貼る依頼文</summary>
@@ -180,7 +256,7 @@ export function ConversationTransfer({
                 setGeneratedSignature(promptSignature);
                 setPromptApproved(false);
               } catch (e) {
-                onError(e);
+                reportError(e);
               }
             }}
           >
@@ -234,17 +310,21 @@ export function ConversationTransfer({
           hidden
           ref={fileInput}
           type="file"
-          accept=".json,.md,.markdown,application/json,text/markdown"
-          aria-label="GPTのJSON・Markdownファイル"
+          accept=".json,.flashcards,.csv,.tsv,.txt,.md,.markdown,.mdown,application/json,text/csv,text/tab-separated-values,text/plain,text/markdown"
+          aria-label="学習素材ファイル"
           onChange={(e) => {
             const f = e.target.files?.[0];
             e.target.value = "";
             if (!f) return;
             void work(async () => {
+              setInputError("");
+              setReadStatus(`${f.name}を読み込んでいます…`);
+              setFileName(f.name);
               if (f.size > 5 * 1024 * 1024)
                 throw new Error("ファイルは5MB以下にしてください。");
-              decode(await f.text(), f.name);
-            });
+              const text = decodeLearningBytes(await f.arrayBuffer(), f.name);
+              decode(text, f.name);
+            }, "input");
           }}
         />
         <button
@@ -252,13 +332,29 @@ export function ConversationTransfer({
           className="primary"
           onClick={() => fileInput.current?.click()}
         >
-          JSON・Markdownファイルを取り込む
+          ファイルを選んで取り込む
         </button>
         <p className="muted">
-          GPTが用意した.jsonを選択します。.mdはノート1件として読み込みます。ファイルがなければ返答のJSONだけを下へ貼り付けてください。
+          JSON（従来のカード用形式・front/backにも対応）・CSV・TSV・TXT・Markdownを自動判別します。ファイルは5MB・内容は50万文字・素材は100件まで。ファイルがなくても下へ貼り付けて取り込めます。
         </p>
         <label className="field">
-          GPTからの返答JSON
+          内容の扱い
+          <select
+            value={asNote ? "note" : "auto"}
+            onChange={(e) => {
+              setAsNote(e.target.value === "note");
+              setDrafts([]);
+              setInputError("");
+              setReadStatus("");
+              invalidate();
+            }}
+          >
+            <option value="auto">自動判別（通常はこちら）</option>
+            <option value="note">ノート1件として取り込む</option>
+          </select>
+        </label>
+        <label className="field">
+          GPTからの返答・学習素材
           <textarea
             rows={7}
             value={raw}
@@ -266,6 +362,8 @@ export function ConversationTransfer({
             onChange={(e) => {
               setRaw(e.target.value);
               setFileName("");
+              setInputError("");
+              setReadStatus("");
               setDrafts([]);
               invalidate();
             }}
@@ -279,18 +377,42 @@ export function ConversationTransfer({
         >
           貼り付けた内容を読み込む
         </button>
+        <div ref={inputFeedback} tabIndex={-1} className="transfer-feedback">
+          {inputError && (
+            <p role="alert" className="error">
+              読み込めませんでした：{inputError}
+            </p>
+          )}
+          {readStatus && (
+            <p role="status" className="notice">
+              {readStatus}
+            </p>
+          )}
+        </div>
+        <details>
+          <summary>対応形式と簡単な入力例</summary>
+          <p>
+            カードJSONはcards配列・JSON配列のquestion/answerまたはfront/backに対応。CSVの見出しは「問題,解答」や「question,answer」。Excelの2列をコピーしたタブ区切りにも対応します。
+          </p>
+          <pre>{`Q: 確認するものは？\nA: 数値・単位・適用条件\n\nQ: 次の確認は？\nA: 原文との照合`}</pre>
+          <p>
+            Q:とA:の本文・解答は複数行で記述できます。一般文章は「ノート1件として取り込む」を選びます。Markdownファイルはノートになります。PDF・Word・画像の直接読み取りは対象外です。
+          </p>
+        </details>
+        <p className="muted">
+          保存先は前回の選択をこの端末に記憶します。未分類のまま保存して後から変更することもできます。
+        </p>
         <div className="grid three">
           <label className="field">
             保存先の学習対象
             <select
               value={scope.targetId}
               onChange={(e) => {
-                setScope({
+                changeScope({
                   targetId: e.target.value,
                   subjectId: "",
                   unitId: "",
                 });
-                invalidate();
               }}
             >
               <option value="">未分類</option>
@@ -309,8 +431,11 @@ export function ConversationTransfer({
               value={scope.subjectId}
               disabled={!scope.targetId}
               onChange={(e) => {
-                setScope({ ...scope, subjectId: e.target.value, unitId: "" });
-                invalidate();
+                changeScope({
+                  ...scope,
+                  subjectId: e.target.value,
+                  unitId: "",
+                });
               }}
             >
               <option value="">未分類</option>
@@ -334,8 +459,7 @@ export function ConversationTransfer({
               value={scope.unitId}
               disabled={!scope.subjectId}
               onChange={(e) => {
-                setScope({ ...scope, unitId: e.target.value });
-                invalidate();
+                changeScope({ ...scope, unitId: e.target.value });
               }}
             >
               <option value="">未分類</option>
@@ -563,16 +687,50 @@ export function ConversationTransfer({
               </details>
             );
           })}
+          {missing > 0 && (
+            <div className="notice stack">
+              <p>
+                {missing}
+                件のカード・問題に根拠の原文がありません。問題と解答から原文を補作せず、出典未確認として扱います。内容を照合してから利用してください。
+              </p>
+              <label className="row">
+                <input
+                  type="checkbox"
+                  checked={missingApproved}
+                  onChange={(e) => {
+                    setMissingApproved(e.target.checked);
+                    setPreview(null);
+                    setApproved(false);
+                  }}
+                />
+                原文がない素材を出典未確認として取り込むことを確認した
+              </label>
+            </div>
+          )}
           <button
             type="button"
             className="primary"
-            disabled={!selected.length}
+            disabled={
+              !selected.length ||
+              !!inputError ||
+              (missing > 0 && !missingApproved)
+            }
             onClick={() =>
               void work(async () => {
                 const token = generation.current;
-                const result = await previewLearningImport(drafts, scope);
+                if (JSON.stringify(scope) !== JSON.stringify(resolvedScope))
+                  throw new Error(
+                    "保存先が変更・削除されています。保存先を選び直してください。",
+                  );
+                const result = await previewLearningImport(
+                  drafts,
+                  scope,
+                  missingApproved,
+                );
                 if (token === generation.current) {
                   setPreview(result);
+                  setPreparedScope({ ...scope });
+                  setPreparedGeneration(token);
                   setApproved(false);
                 }
               })
@@ -594,9 +752,14 @@ export function ConversationTransfer({
           </p>
           <p>
             保存先：
-            {entities.find((e) => e.id === scope.targetId)?.title || "未分類"} /{" "}
-            {entities.find((e) => e.id === scope.subjectId)?.title || "未分類"}{" "}
-            / {entities.find((e) => e.id === scope.unitId)?.title || "未分類"}
+            {entities.find((e) => e.id === preparedScope?.targetId)?.title ||
+              "未分類"}{" "}
+            /{" "}
+            {entities.find((e) => e.id === preparedScope?.subjectId)?.title ||
+              "未分類"}{" "}
+            /{" "}
+            {entities.find((e) => e.id === preparedScope?.unitId)?.title ||
+              "未分類"}
           </p>
           {preview.warnings.map((w, i) => (
             <p key={i}>{w}</p>
@@ -621,10 +784,19 @@ export function ConversationTransfer({
           <button
             type="button"
             className="primary"
-            disabled={!approved || busy || !preview.records.length}
+            disabled={
+              !approved || busy || !currentPreview || !preview.records.length
+            }
             onClick={() =>
               void work(async () => {
-                const result = await applyImport(preview);
+                if (!currentPreview || !approved)
+                  throw new Error(
+                    "入力内容・保存先が変わりました。保存前プレビューから確認し直してください。",
+                  );
+                const result = await applyLearningImport(
+                  preview,
+                  preparedScope!,
+                );
                 setPreview(null);
                 setDrafts([]);
                 setRaw("");
@@ -640,7 +812,18 @@ export function ConversationTransfer({
           </button>
         </section>
       )}
-      {message && <p role="status">{message}</p>}
+      <div ref={actionFeedback} tabIndex={-1} className="transfer-feedback">
+        {actionError && (
+          <p className="error" role="alert">
+            {actionError}
+          </p>
+        )}
+        {message && (
+          <p className="notice" role="status">
+            {message}
+          </p>
+        )}
+      </div>
     </section>
   );
 }

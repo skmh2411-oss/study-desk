@@ -171,6 +171,7 @@ export interface Preferences {
   reviewRatio: number;
   bufferDays: number;
   lastTimer?: Partial<TimerState>;
+  lastLearningScope?: { targetId: string; subjectId: string; unitId: string };
 }
 export const defaultPreferences: Preferences = {
   id: "preferences",
