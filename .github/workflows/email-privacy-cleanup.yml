@@ -1,0 +1,89 @@
+name: Temporary email privacy cleanup
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: study-desk-email-privacy-cleanup
+  cancel-in-progress: false
+jobs:
+  anonymize:
+    if: github.repository == 'skmh2411-oss/study-desk' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify and anonymize commit metadata
+        shell: bash
+        run: |
+          python - <<'PYCODE'
+          import os, subprocess, re, json
+          assert os.environ['GITHUB_REPOSITORY'] == 'skmh2411-oss/study-desk'
+          assert os.environ['GITHUB_REF'] == 'refs/heads/main'
+          def git(*args, data=None):
+              return subprocess.check_output(['git', *args], input=data)
+          expected = {
+              'refs/heads/fix/import-compatibility-1.4.1': 'cde5e66b1da9d846a905a16ce973f385ab358327',
+              'refs/heads/fix/short-gpt-prompt': '8f26f42e4308297f0d010ba84fc540f6dd5b9845',
+              'refs/heads/study-desk-v1-4-conversation': '41631c1898c7f908c8b1e70a7d161baaaadb5ee1',
+              'refs/heads/main': os.environ['GITHUB_SHA'],
+          }
+          git('fetch', '--no-tags', 'origin', '+refs/heads/*:refs/remotes/origin/*')
+          refs = dict(line.split('\t', 1)[::-1] for line in git('ls-remote', '--heads', 'origin').decode().splitlines())
+          assert refs == expected, 'Branches changed; stopped without modifying remote history'
+          old = git('show', '-s', '--format=%ae', 'f2a93d68a1e66febe6e7da151326df84839091ad').strip()
+          assert old.endswith(b'@gmail.com')
+          new = b'361838138+skmh2411-oss@users.noreply.github.com'
+          commits = git('rev-list', '--reverse', '--topo-order', *refs.values()).decode().splitlines()
+          assert len(commits) == 38, 'Unexpected commit graph; stopped'
+          mapping = {}; anonymized = 0; signatures = 0
+          for sha in commits:
+              raw = git('cat-file', 'commit', sha)
+              header, sep, message = raw.partition(b'\n\n')
+              assert sep
+              lines = header.split(b'\n'); out = []; skip = False
+              for line in lines:
+                  if line.startswith((b'gpgsig ', b'gpgsig-sha256 ')):
+                      signatures += 1; skip = True; continue
+                  if skip and line.startswith(b' '):
+                      continue
+                  skip = False
+                  assert not line.startswith(b'mergetag '), 'Signed merge tag requires separate handling'
+                  if line.startswith(b'parent '):
+                      line = b'parent ' + mapping[line[7:].decode()].encode()
+                  if line.startswith((b'author ', b'committer ')):
+                      if b'<' + old + b'>' in line:
+                          anonymized += int(line.startswith(b'author '))
+                          line = line.replace(b'<' + old + b'>', b'<' + new + b'>')
+                      match = re.search(rb'<([^<>]+)>', line)
+                      assert match and (match[1] == b'noreply@github.com' or match[1].endswith(b'@users.noreply.github.com')), 'Unexpected identity; stopped'
+                  out.append(line)
+              rewritten = b'\n'.join(out) + b'\n\n' + message
+              assert old not in rewritten
+              newsha = git('hash-object', '-t', 'commit', '-w', '--stdin', data=rewritten).decode().strip()
+              assert git('show', '-s', '--format=%T', sha) == git('show', '-s', '--format=%T', newsha)
+              assert git('show', '-s', '--format=%at %ai %ct %ci', sha) == git('show', '-s', '--format=%at %ai %ct %ci', newsha)
+              assert git('cat-file', 'commit', newsha).partition(b'\n\n')[2] == message
+              mapping[sha] = newsha
+          assert anonymized == 37
+          assert all(old not in git('cat-file', 'commit', sha) for sha in mapping.values())
+          leases = [f'--force-with-lease={ref}:{sha}' for ref, sha in refs.items()]
+          refspecs = [f'{mapping[sha]}:{ref}' for ref, sha in refs.items()]
+          git('push', '--atomic', *leases, 'origin', *refspecs)
+          after = dict(line.split('\t', 1)[::-1] for line in git('ls-remote', '--heads', 'origin').decode().splitlines())
+          assert after == {ref: mapping[sha] for ref, sha in refs.items()}
+          summary = '\n'.join([
+              '## Email privacy rewrite',
+              '- Personal author emails anonymized: 37',
+              f'- Commits verified: {len(commits)}',
+              '- Branches updated atomically: 4',
+              '- File contents, messages, and timestamps unchanged.',
+              f'- Invalidated signatures removed: {signatures}',
+              '- PR references, old workflow metadata and caches require separate handling.',
+          ])
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as f:
+              f.write(summary + '\n')
+          print(summary)
+          PYCODE
