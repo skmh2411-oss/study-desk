@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import { db, getPreferences, setPreferences } from "./db";
-import { decodeLearningBytes } from "./learningFormats";
+import { decodeLearningBytes, type LearningDelivery } from "./learningFormats";
 import { type ImportPreview } from "./exchange";
 import { SafeMarkdown } from "./Learning";
 import { referenceInstructions, citationSiteStatus } from "./references";
@@ -30,6 +30,7 @@ export function ConversationTransfer({
     "question",
     "note",
   ]);
+  const [delivery, setDelivery] = useState<LearningDelivery>("copy");
   const [count, setCount] = useState(20),
     [detail, setDetail] = useState("");
   const [prompt, setPrompt] = useState(""),
@@ -106,7 +107,8 @@ export function ConversationTransfer({
     kinds,
     count,
     detail,
-    rules: referenceInstructions(sites, scope.targetId),
+    delivery,
+    rules: referenceInstructions(sites, scope.targetId, true),
   });
   const [generatedSignature, setGeneratedSignature] = useState("");
   const current = promptSignature === generatedSignature;
@@ -240,6 +242,19 @@ export function ConversationTransfer({
               }}
             />
           </label>
+          <label className="field">
+            返答の受け取り方
+            <select
+              value={delivery}
+              onChange={(e) => {
+                setDelivery(e.target.value as LearningDelivery);
+                setPromptApproved(false);
+              }}
+            >
+              <option value="copy">コピー用JSON（おすすめ）</option>
+              <option value="file">JSONファイル（開かずに取り込み）</option>
+            </select>
+          </label>
           <button
             type="button"
             className="secondary"
@@ -250,7 +265,8 @@ export function ConversationTransfer({
                     kinds,
                     count,
                     detail,
-                    referenceInstructions(sites, scope.targetId),
+                    referenceInstructions(sites, scope.targetId, true),
+                    delivery,
                   ),
                 );
                 setGeneratedSignature(promptSignature);
@@ -264,6 +280,9 @@ export function ConversationTransfer({
           </button>
           {prompt && (
             <>
+              <p className="muted">
+                指示文：{prompt.length}文字。選んだ種類の見本だけを含みます。
+              </p>
               <label className="field">
                 GPTへ渡す依頼文
                 <textarea rows={9} readOnly value={prompt} />
@@ -334,6 +353,9 @@ export function ConversationTransfer({
         >
           ファイルを選んで取り込む
         </button>
+        <p className="notice">
+          ファイルの中身を開いてコピーする必要はありません。GPTの添付JSONを保存し、このボタンで選ぶと読み込めます。コピー用の返答なら、JSONコードブロックをコピーして下へ貼り付けます。
+        </p>
         <p className="muted">
           JSON（従来のカード用形式・front/backにも対応）・CSV・TSV・TXT・Markdownを自動判別します。ファイルは5MB・内容は50万文字・素材は100件まで。ファイルがなくても下へ貼り付けて取り込めます。
         </p>
