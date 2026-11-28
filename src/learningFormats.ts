@@ -1,14 +1,48 @@
 import Papa from "papaparse";
 
-export const learningOutputInstructions = `【出力形式】
-次のJSON形式のみを返す。可能ならstudy-desk-learning.jsonとしてファイルを用意する。できない場合はJSONコードブロックだけを返す。itemsはcard/question/note、合計100件以内。
-{"format":"study-desk-learning","schemaVersion":1,"items":[
-{"kind":"card","question":"対象・条件を含む問い","answer":"答え","cardType":"qa","answerUnit":"","conditions":"適用条件","originalText":"根拠の原文","importance":3,"tags":[],"source":"会話または資料の名称","sourceUrl":""},
-{"kind":"question","question":"本文を含む○×または選択問題","answer":"○","choices":["○","×"],"originalText":"根拠の原文","importance":3,"tags":[],"source":"出典"},
-{"kind":"note","title":"題名","body":"# 結論\\n\\nMarkdown本文","originalText":"根拠の原文","importance":3,"tags":[],"source":"出典"}
-]}
-ID・設定・保存先ID・履歴・確認済みの宣言は出力しない。cardTypeはqa（一問一答）/formula（計算式）/number（数値確認）。演習のanswerはchoicesの文字列と完全一致させる。解説は原則不要。数値の単位・条件は解答にも含める。計画や分析の提案はノートに整理する。
-カード・演習問題には特定できる根拠の原文をoriginalTextへ引用する。原文や出典を捏造しない。原文が特定できない内容は要確認と明記したノートにする。会話の最終訂正を優先する。上記は形式見本なので見本の文自体は出力しない。`;
+export type LearningDelivery = "copy" | "file";
+export type LearningOutputKind = "card" | "question" | "note";
+const outputExamples = {
+  card: {
+    kind: "card",
+    question: "対象・条件を含む問い",
+    answer: "答え",
+    originalText: "根拠の原文",
+  },
+  question: {
+    kind: "question",
+    question: "記述本文を含む問題",
+    choices: ["○", "×"],
+    answer: "○",
+    originalText: "根拠の原文",
+  },
+  note: {
+    kind: "note",
+    title: "題名",
+    body: "Markdown本文",
+    originalText: "根拠の原文",
+  },
+};
+export function buildLearningOutputInstructions(
+  kinds: LearningOutputKind[] = ["card", "question", "note"],
+  delivery: LearningDelivery = "copy",
+) {
+  const schema = JSON.stringify({
+    format: "study-desk-learning",
+    schemaVersion: 1,
+    items: [...new Set(kinds)].map((kind) => outputExamples[kind]),
+  });
+  return `出力：以下の見本を実際の内容に置き換えた有効なJSON（合計100件以内）。
+${schema}
+${kinds.includes("question") ? "演習のanswerはchoices内の文字列と完全一致。" : ""}${kinds.includes("card") ? '計算式はcardType:"formula"、数値確認は"number"を追加可。' : ""}ID・履歴・設定は不要。${kinds.includes("note") ? "計画・分析はノートにする。" : ""}
+originalTextは根拠の原文を引用。原文・出典は捏造しない。出典はsource、URLはsourceUrlに。
+${
+  delivery === "file"
+    ? "返答はstudy-desk-learning.jsonを添付。添付できない場合は同じJSONをコードブロック1つで返す。"
+    : "返答はJSONコードブロック1つだけ。ファイル作成・前後の説明は不要。"
+}`;
+}
+export const learningOutputInstructions = buildLearningOutputInstructions();
 
 type Row = Record<string, unknown>;
 const object = (v: unknown): v is Row =>
