@@ -139,10 +139,22 @@ export function citationSiteStatus(
 export function referenceInstructions(
   sites: ReferenceSite[],
   targetId?: string,
+  concise = false,
 ): string {
   const selected = applicable(sites, targetId).sort(
     (a, b) => a.priority - b.priority || a.name.localeCompare(b.name),
   );
+  if (concise)
+    return [
+      selected.length
+        ? "優先出典（登録は確認済みを意味しない）："
+        : "優先出典の登録なし。",
+      ...selected.map(
+        (site) =>
+          `${site.priority}. ${site.name} ${site.url}${site.asOf ? `（基準日${site.asOf}）` : ""}`,
+      ),
+      "登録外資料を使用したらサイト名・URL・使用理由・該当内容を明示。根拠のURL・該当箇所・基準日・確認日を記し、参照不能や未確認の内容は未確認とする。",
+    ].join("\n");
   const outsideRule =
     "登録外の資料を参照した場合は、回答内で『登録外資料を使用』と明示し、サイト名・URL・使用理由・該当する内容を記載してください。根拠が確認できなければ未確認としてください。";
   if (!selected.length)

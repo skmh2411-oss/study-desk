@@ -49,7 +49,7 @@ export function ChatGPTPanel({
   const active = entities.filter((e) => !e.deletedAt),
     candidates = sharingCandidates(entities, selection),
     records = sharedRecords(entities, selection);
-  const rules = referenceInstructions(referenceSites, selection.targetId);
+  const rules = referenceInstructions(referenceSites, selection.targetId, true);
   const signature =
       sharingSignature(entities, selection, request, detail) + rules,
     current = signature === generatedSignature;
